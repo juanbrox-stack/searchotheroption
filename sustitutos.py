@@ -506,7 +506,12 @@ with tab_res:
         st.info('Ejecuta el procesado en ⚙️ Procesar.')
         st.stop()
 
-    results  = st.session_state['results']
+    # Guard: if results are from an old run with different schema, clear them
+    results = st.session_state['results']
+    if results and 'SKU' not in results[0]['row'] and 'REF' not in results[0]['row']:
+        del st.session_state['results']
+        st.warning('Resultados anteriores incompatibles. Vuelve a procesar.')
+        st.stop()
     con_sust = [r for r in results if not r['subs'].empty]
     sin_sust = [r for r in results if r['subs'].empty]
     total    = len(results)
@@ -534,7 +539,7 @@ with tab_res:
                     'País':              row['PAIS'],
                     'Canal':             row['MARKETPLACE'][:30],
                     'Amazon':            '✅' if row['IS_AMAZON'] else '—',
-                    'SKU original':      row['SKU'],
+                    'SKU original':      row.get('SKU') or row.get('REF',''),
                     'Producto original': r['nombre_orig'][:55],
                     'PVP orig. (€)':     round(r['pvp_orig'], 2),
                     'Subfamilia':        r['subfamilia'],
@@ -546,7 +551,7 @@ with tab_res:
                 })
                 output_rows.append({
                     'NUMBER':      row['EXPEDICION'],
-                    'ARTICLE':     row['SKU'],
+                    'ARTICLE':     row.get('SKU') or row.get('REF',''),
                     'NEW_ARTICLE': str(best.get('REFERENCIA','')),
                 })
 
@@ -577,14 +582,14 @@ with tab_res:
                 with st.expander(
                     f"**{row['EXPEDICION']}** · {row['PAIS']} "
                     f"{'🛒' if row['IS_AMAZON'] else ''} · "
-                    f"SKU {row['SKU']} → **{best.get('REFERENCIA','')}** ({sign} PVP)"
+                    f"SKU {row.get('SKU') or row.get('REF','')} → **{best.get('REFERENCIA','')}** ({sign} PVP)"
                 ):
                     cc1, cc2 = st.columns(2)
                     with cc1:
                         st.markdown('**📦 Pedido original**')
                         st.markdown(f"Expedición: `{row['EXPEDICION']}`")
                         st.markdown(f"Canal: `{row['MARKETPLACE']}`")
-                        st.markdown(f"SKU: `{row['SKU']}` · País: **{row['PAIS']}**")
+                        st.markdown(f"SKU: `{row.get('SKU') or row.get('REF','')}` · País: **{row['PAIS']}**")
                         st.markdown(f"**{r['nombre_orig']}**")
                         st.markdown(f"PVP PUB: **{r['pvp_orig']:.2f}€** · Subfamilia: {r['subfamilia']}")
                     with cc2:
@@ -604,14 +609,15 @@ with tab_res:
             cancel_rows = []
             for r in sin_sust:
                 row = r['row']
+                sku = row.get('SKU') or row.get('REF') or ''
                 motivo = ('SKU no encontrado en tarifa' if r['tar_row'] is None
                           else f"Sin sustituto con stock en subfamilia '{r['subfamilia']}'")
                 cancel_rows.append({
-                    'Expedición':   row['EXPEDICION'],
-                    'País':         row['PAIS'],
-                    'Canal':        row['MARKETPLACE'][:35],
-                    'Amazon':       '✅' if row['IS_AMAZON'] else '—',
-                    'SKU':          row['SKU'],
+                    'Expedición':   row.get('EXPEDICION',''),
+                    'País':         row.get('PAIS',''),
+                    'Canal':        str(row.get('MARKETPLACE',''))[:35],
+                    'Amazon':       '✅' if row.get('IS_AMAZON') else '—',
+                    'SKU':          sku,
                     'Producto':     r['nombre_orig'][:60],
                     'PVP (€)':      round(r['pvp_orig'],2),
                     'Subfamilia':   r['subfamilia'],
