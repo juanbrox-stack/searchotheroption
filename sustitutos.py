@@ -67,7 +67,12 @@ def load_tarifa_inter(path):
     out = {}
     for sh in xl.sheet_names:
         df = pd.read_excel(path, sheet_name=sh, dtype={'REFERENCIA': str})
-        df['REF'] = df['REFERENCIA'].apply(lambda x: str(int(float(x))) if re.match(r'^\d+\.?\d*$', str(x)) else str(x))
+        # Some sheets may not have REFERENCIA (e.g. % sheets) — skip them
+        if 'REFERENCIA' not in df.columns:
+            continue
+        df['REF'] = df['REFERENCIA'].apply(
+            lambda x: str(int(float(x))) if re.match(r'^\d+\.?\d*$', str(x).strip()) else str(x)
+        )
         out[sh] = df
     return out
 
