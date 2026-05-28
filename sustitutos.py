@@ -179,19 +179,24 @@ def parse_sinstocks(path):
     headers = [str(v or '').strip().upper() for v in rows[header_idx]]
 
     def col(name_fragments):
-        """Find column index by partial name match."""
+        """Find column index by partial name match (accent-insensitive)."""
+        import unicodedata
+        def strip_acc(s):
+            return ''.join(c for c in unicodedata.normalize('NFD', s)
+                           if unicodedata.category(c) != 'Mn').upper()
         for frag in name_fragments:
+            frag_clean = strip_acc(frag)
             for i, h in enumerate(headers):
-                if frag.upper() in h:
+                if frag_clean in strip_acc(h):
                     return i
         return None
 
-    c_expedi    = col(['EXPEDICIÓN','EXPEDICION']) or 4
-    c_articulo  = col(['ARTÍCULO','ARTICULO'])     or 9
-    c_cantidad  = col(['CANTIDAD'])                or 8
-    c_entidad   = col(['ENTIDAD'])                 or 13
-    c_pais      = col(['CÓDIGO DE PAÍS','PAIS','PAÍS']) or 18
-    c_order_id  = col(['IDENTIFICADOR'])           or 1
+    c_expedi    = col(['EXPEDICION','EXPEDICI']) or 3
+    c_articulo  = col(['ARTICULO','ARTÍCULO'])   or 9
+    c_cantidad  = col(['CANTIDAD'])              or 8
+    c_entidad   = col(['ENTIDAD'])               or 13
+    c_pais      = col(['CODIGO DE PAIS','PAÍS','PAIS','COUNTRY']) or 18
+    c_order_id  = col(['IDENTIFICADOR'])         or 1
 
     records = []
     for r in rows[header_idx + 1:]:
@@ -435,6 +440,18 @@ with tab_proc:
         if st.button('🚀 Procesar pedidos sin stock', type='primary', use_container_width=True):
             with st.spinner('Leyendo Sinstocks…'):
                 df_sins = parse_sinstocks(path_sins)
+                if df_sins.empty or 'EXPEDICION' not in df_sins.columns:
+                    st.error('No se pudieron leer pedidos del fichero Sinstocks. Verifica que el fichero es correcto.')
+                    # Show debug info
+                    try:
+                        wb_d = openpyxl.load_workbook(path_sins, read_only=True, data_only=True)
+                        ws_d = wb_d.active
+                        r0 = list(ws_d.iter_rows(max_row=1, values_only=True))[0]
+                        wb_d.close()
+                        st.caption(f"Cabeceras detectadas: {[str(v) for v in r0 if v]}")
+                    except Exception as e:
+                        st.caption(f"Error al leer: {e}")
+                    st.stop()
                 if skip_dupes:
                     df_sins = df_sins[~df_sins['EXPEDICION'].str.upper().str.startswith('DUPLICADO')]
                 df_sins = df_sins[df_sins['EXPEDICION'].str.startswith('D')].copy()
