@@ -276,6 +276,19 @@ def get_stock_for_ref(sku, country, is_amazon, stocks):
             return int(df[mask].iloc[0]['STOCK'] or 0)
     return 0
 
+def extract_size(text: str) -> str | None:
+    """Extract dimensions like 140x190, 80x200, 135x190 from product name."""
+    m = re.search(r'\b(\d{2,3})[xX×](\d{2,3})\b', str(text))
+    if m:
+        return f"{m.group(1)}x{m.group(2)}"
+    return None
+
+# Product families where size must match
+SIZE_SENSITIVE_FAMILIES = {
+    'colchon', 'colchones', 'base', 'bases', 'canape', 'canapes',
+    'somier', 'somiers', 'canapé', 'canapés',
+}
+
 def find_substitutes(tar_row, pvp_col, pvp_orig, sku_orig,
                      country, is_amazon, tarifa_nac, tarifa_inter, stocks, max_extra=10.0):
     """Same SUBFAMILIA, not desposicionado, PVP PUB ≤ original+max_extra, stock > 0."""
@@ -292,6 +305,15 @@ def find_substitutes(tar_row, pvp_col, pvp_orig, sku_orig,
 
     subfamilia = str(tar_row.get('SUBFAMILIA',''))
     familia    = str(tar_row.get('FAMILIA',''))
+    nombre_orig_full = str(tar_row.get('NOMBRE COMPLETO',''))
+
+    # Extract size from original product name (e.g. 140x190)
+    orig_size = extract_size(nombre_orig_full)
+    # Check if this family requires size matching
+    needs_size_match = orig_size and any(
+        s in subfamilia.lower() or s in familia.lower()
+        for s in SIZE_SENSITIVE_FAMILIES
+    )
 
     # Filter by subfamilia (or familia fallback)
     if subfamilia and 'SUBFAMILIA' in df.columns:
@@ -305,10 +327,17 @@ def find_substitutes(tar_row, pvp_col, pvp_orig, sku_orig,
     if 'DESPOSICIONADO' in df.columns:
         mask &= df['DESPOSICIONADO'].fillna(False) == False
 
-    # PVP ≤ original + max_extra
+    # PVP >= original (no sustituto de menos valor) AND <= original + max_extra
     if pc in df.columns:
         pvp_vals = pd.to_numeric(df[pc], errors='coerce')
+        mask &= pvp_vals >= pvp_orig
         mask &= pvp_vals <= (pvp_orig + max_extra)
+
+    # Size filter for mattresses and similar (must match dimensions exactly)
+    if needs_size_match and 'NOMBRE COMPLETO' in df.columns:
+        mask &= df['NOMBRE COMPLETO'].apply(
+            lambda n: extract_size(str(n)) == orig_size
+        )
 
     # Exclude original SKU
     mask &= df['REF'] != str(sku_orig)
@@ -434,7 +463,7 @@ with tab_proc:
 
         st.markdown('<div class="sec">⚙️ Configuración</div>', unsafe_allow_html=True)
         ca, cb, cc = st.columns(3)
-        with ca: max_extra       = st.number_input('Máx. incremento PVP PUB (€)', 0.0, 50.0, 10.0, 1.0)
+        with ca: max_extra       = st.number_input('Máx. incremento PVP sobre original (€)', 0.0, 50.0, 10.0, 1.0)
         with cb: default_country = st.selectbox('País por defecto', ['ES','FR','IT','DE','PT','PL'], index=0)
         with cc: skip_dupes      = st.checkbox('Ignorar DUPLICADO', value=True)
 
@@ -560,6 +589,7 @@ with tab_res:
                     'Subfamilia':        r['subfamilia'],
                     '→ SKU sustituto':   str(best.get('REFERENCIA','')),
                     '→ Sustituto':       str(best.get('NOMBRE COMPLETO',''))[:55],
+                    'Medida':            extract_size(str(best.get('NOMBRE COMPLETO',''))) or '—',
                     'PVP sust. (€)':     round(float(best.get('PVP',0) or 0), 2),
                     'Δ PVP (€)':         delta,
                     'Stock disponible':  int(best.get('STOCK',0) or 0),
