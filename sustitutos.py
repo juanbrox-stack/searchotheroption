@@ -87,26 +87,65 @@ def load_stock_global(path):
 
 @st.cache_data
 def load_listing(path):
-    """Amazon listing: SKU → countries where it sells."""
-    wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
-    ws = wb['BBDD'] if 'BBDD' in wb.sheetnames else wb.active
-    rows = list(ws.iter_rows(values_only=True))
-    wb.close()
+    """Amazon listing/orders: SKU → countries.
+    Supports:
+    - Orders TSV (amazon-order-id + sku + ship-country columns)
+    - Listings TSV (SKU del vendedor column with FR/IT/DE prefixes)
+    - Legacy xlsx (Informe_W20 format)
+    """
     sku_countries = {}
-    for r in rows[1:]:
-        pais = str(r[1] or '').strip().upper()
-        ref_raw = str(r[3] or '').strip()
-        # Parse FR02070 → (FR, 2070) | 2157 → (ES, 2157) | A01_EU01_102718 → (ES, 102718)
-        m = re.match(r'^([A-Z]{2})(\d+)$', ref_raw)
-        if m:
-            country_prefix, ref_num = m.group(1), str(int(m.group(2)))
-            country = country_prefix if country_prefix in VALID_COUNTRIES else pais
-        else:
-            m2 = re.search(r'(\d{3,6})$', ref_raw)
-            ref_num = str(int(m2.group(1))) if m2 else ref_raw
-            country = pais if pais in VALID_COUNTRIES else 'ES'
-        if ref_num:
-            sku_countries.setdefault(ref_num, set()).add(country)
+    p = Path(path)
+
+    if p.suffix.lower() in ('.txt', '.tsv', '.csv'):
+        df = pd.read_csv(path, sep='\t', encoding='utf-8-sig', dtype=str)
+        cols = [c.strip() for c in df.columns]
+        df.columns = cols
+
+        # ── Amazon orders format: has 'sku' and 'ship-country' ──────────────
+        if 'sku' in cols and 'ship-country' in cols:
+            for _, row in df[['sku','ship-country']].dropna().iterrows():
+                sku = str(row['sku']).strip()
+                country = str(row['ship-country']).strip().upper()
+                if country not in VALID_COUNTRIES:
+                    continue
+                # S08303 → 8303 | S00120 → 120 | A01_EU01_008303 → 8303
+                m = re.search(r'(\d{3,6})$', sku)
+                if m:
+                    ref_num = str(int(m.group(1)))
+                    sku_countries.setdefault(ref_num, set()).add(country)
+
+        # ── Listings format: has 'SKU del vendedor' with FR/IT/DE prefix ────
+        elif 'SKU del vendedor' in cols:
+            for sku_raw in df['SKU del vendedor'].dropna():
+                sku = str(sku_raw).strip()
+                m = re.match(r'^([A-Z]{2})0*(\d+)$', sku)
+                if m and m.group(1) in VALID_COUNTRIES:
+                    sku_countries.setdefault(str(int(m.group(2))), set()).add(m.group(1))
+                else:
+                    m2 = re.search(r'(\d{3,6})$', sku)
+                    if m2:
+                        sku_countries.setdefault(str(int(m2.group(1))), set()).add('ES')
+
+    else:
+        # ── Legacy xlsx (Informe_W20) ────────────────────────────────────────
+        wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
+        ws = wb['BBDD'] if 'BBDD' in wb.sheetnames else wb.active
+        rows = list(ws.iter_rows(values_only=True))
+        wb.close()
+        for r in rows[1:]:
+            pais = str(r[1] or '').strip().upper()
+            ref_raw = str(r[3] or '').strip()
+            m = re.match(r'^([A-Z]{2})(\d+)$', ref_raw)
+            if m:
+                country = m.group(1) if m.group(1) in VALID_COUNTRIES else pais
+                ref_num = str(int(m.group(2)))
+            else:
+                m2 = re.search(r'(\d{3,6})$', ref_raw)
+                ref_num = str(int(m2.group(1))) if m2 else ref_raw
+                country = pais if pais in VALID_COUNTRIES else 'ES'
+            if ref_num:
+                sku_countries.setdefault(ref_num, set()).add(country)
+
     return sku_countries
 
 def parse_sinstocks(path):
@@ -327,61 +366,69 @@ def _find(key, *patterns):
     return None
 
 # ── UI ─────────────────────────────────────────────────────────────────────────
-tab_proc, tab_res, tab_files = st.tabs(['⚙️ Procesar', '📊 Resultados', '📂 Ficheros'])
+# ── File uploaders FIRST (always visible, before tabs) ────────────────────────
+with st.sidebar:
+    st.markdown("### 📂 Cargar ficheros")
+    fu_nac     = st.file_uploader('Tarifa Nacional',     type=['xlsx'], key='u_nac')
+    fu_inter   = st.file_uploader('Tarifa Internacional',type=['xlsx'], key='u_inter')
+    fu_stock   = st.file_uploader('Stock Global',        type=['xlsx'], key='u_stock')
+    fu_sins    = st.file_uploader('Sinstocks',           type=['xlsx'], key='u_sins')
+    fu_listing = st.file_uploader('Listing Amazon',      type=['xlsx','txt','tsv','csv'], key='u_list')
 
-with tab_files:
-    st.markdown('<div class="sec">📂 Cargar ficheros</div>', unsafe_allow_html=True)
-    c1, c2 = st.columns(2)
-    with c1:
-        fu_nac      = st.file_uploader('Tarifa Nacional (TARIFA_NACIONAL...)',  type=['xlsx'], key='u_nac')
-        fu_inter    = st.file_uploader('Tarifa Internacional (TARIFA_TURACO...)', type=['xlsx'], key='u_inter')
-    with c2:
-        fu_stock    = st.file_uploader('Stock Global (Stock_Global...)',          type=['xlsx'], key='u_stock')
-        fu_sins     = st.file_uploader('Sin Stocks (Sinstocks...)',               type=['xlsx'], key='u_sins')
-        fu_listing  = st.file_uploader('Listing Amazon (Informe_W20...)',         type=['xlsx'], key='u_list')
-
-    if st.button('💾 Guardar ficheros en sesión', type='primary'):
+    if st.button('💾 Guardar', type='primary', use_container_width=True):
         tmp = Path(tempfile.mkdtemp())
-        for key, fu in [('nac',fu_nac),('inter',fu_inter),('stock',fu_stock),('sins',fu_sins),('listing',fu_listing)]:
+        saved = 0
+        for key, fu in [('nac',fu_nac),('inter',fu_inter),('stock',fu_stock),
+                        ('sins',fu_sins),('listing',fu_listing)]:
             if fu:
                 p = tmp / fu.name
                 p.write_bytes(fu.read())
                 st.session_state[f'path_{key}'] = str(p)
-        # Clear caches
+                saved += 1
         for fn in [load_tarifa_nac, load_tarifa_inter, load_stock_global, load_listing]:
             fn.clear()
-        st.success('✅ Ficheros guardados')
+        st.success(f'✅ {saved} fichero(s) guardados')
+        st.rerun()
 
     st.divider()
-    st.caption('O coloca los ficheros en la misma carpeta que app.py.')
+    st.caption('O coloca los ficheros en la misma carpeta que app.py y reinicia.')
 
 # Resolve paths
 path_nac     = _find('nac',     'TARIFA_NACIONAL')
 path_inter   = _find('inter',   'TARIFA_TURACO')
 path_stock   = _find('stock',   'Stock_Global')
-path_sins    = _find('sins',    'Sinstocks','sinstocks')
-path_listing = _find('listing', 'Informe_W', 'listing', 'Listing')
+path_sins    = _find('sins',    'Sinstocks', 'sinstocks')
+path_listing = _find('listing', 'Informe_', 'listing', 'Listing')
+if not path_listing:
+    # Also search for .txt files
+    txt_matches = glob.glob(str(UPLOAD_DIR / '*Informe*listing*.txt')) + \
+                  glob.glob(str(UPLOAD_DIR / '*listing*.txt')) + \
+                  glob.glob(str(UPLOAD_DIR / '*Listing*.txt'))
+    if txt_matches: path_listing = txt_matches[0]
 
 # Status bar
 cs = st.columns(5)
-for col, label, path in zip(cs, ['Tarifa Nac.','Tarifa Inter','Stock Global','Sinstocks','Listing Amazon'],
-                              [path_nac, path_inter, path_stock, path_sins, path_listing]):
+labels = ['Tarifa Nac.','Tarifa Inter','Stock Global','Sinstocks','Listing Amazon']
+paths  = [path_nac, path_inter, path_stock, path_sins, path_listing]
+for col, label, path in zip(cs, labels, paths):
     with col:
         if path: st.success(f'✅ {label}')
         else:    st.warning(f'⚠️ {label}')
 
 data_ok = all([path_nac, path_inter, path_stock, path_sins])
 
+tab_proc, tab_res = st.tabs(['⚙️ Procesar', '📊 Resultados'])
+
 with tab_proc:
     if not data_ok:
-        st.warning('Carga los ficheros obligatorios en **📂 Ficheros**.')
-        st.stop()
+        st.warning('👈 Sube los ficheros en el **panel izquierdo** para continuar.')
+    else:
 
-    # Load data
-    tarifa_nac   = load_tarifa_nac(path_nac)
-    tarifa_inter = load_tarifa_inter(path_inter)
-    stocks       = load_stock_global(path_stock)
-    listing_map  = load_listing(path_listing) if path_listing else {}
+        # Load data
+        tarifa_nac   = load_tarifa_nac(path_nac)
+        tarifa_inter = load_tarifa_inter(path_inter)
+        stocks       = load_stock_global(path_stock)
+        listing_map  = load_listing(path_listing) if path_listing else {}
 
     st.markdown('<div class="sec">⚙️ Configuración</div>', unsafe_allow_html=True)
     ca, cb, cc = st.columns(3)
