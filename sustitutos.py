@@ -152,84 +152,85 @@ def load_listing(path):
 
 def parse_sinstocks(path):
     """
-    New sinstock.xlsx format — clean headers:
-      Col D (3)  = EXPEDICIÓN
-      Col J (9)  = ARTÍCULO  → "05993 - NOMBRE" or "A01_EU01_106744 - NOMBRE"
-      Col I (8)  = CANTIDAD
-      Col N (13) = ENTIDAD (marketplace/canal)
-      Col S (18) = CÓDIGO DE PAÍS
-      Col Z (25) = ATENCIÓN DE (not used)
-    SKU extraction:
-      - "05993 - ..."        → SKU = 5993  (5-digit numeric, strip leading zeros)
-      - "A01_EU01_106744 -"  → SKU = A01_EU01_106744  (keep full A-prefix ref)
+    sinstock.xlsx — headers in row 0, data from row 1.
+    Uses openpyxl to avoid pandas column shift issues with empty cells.
+    Col J (idx 9)  = ARTÍCULO  → "05993 - NOMBRE" or "A01_EU01_106744 - NOMBRE"
+    Col E (idx 4)  = EXPEDICIÓN (data is one col right of header label)
+    Col N (idx 13) = ENTIDAD
+    Col S (idx 18) = CÓDIGO DE PAÍS
     """
+    import unicodedata
+    def strip_acc(s):
+        return ''.join(c for c in unicodedata.normalize('NFD', str(s))
+                       if unicodedata.category(c) != 'Mn').upper().strip()
+
     wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
     ws = wb.active
     rows = list(ws.iter_rows(values_only=True))
     wb.close()
 
-    # Detect header row (first row with ARTÍCULO or EXPEDICIÓN)
-    header_idx = 0
-    for i, r in enumerate(rows[:5]):
-        vals = [str(v or '').upper() for v in r]
-        if any('ARTÍCULO' in v or 'ARTICULO' in v or 'EXPEDICIÓN' in v for v in vals):
-            header_idx = i
-            break
+    if not rows:
+        return pd.DataFrame()
 
-    headers = [str(v or '').strip().upper() for v in rows[header_idx]]
+    # Build header map: normalized_name → col_index
+    hdr = {strip_acc(str(v or '')): i for i, v in enumerate(rows[0]) if v}
 
-    def col(name_fragments):
-        """Find column index by partial name match (accent-insensitive)."""
-        import unicodedata
-        def strip_acc(s):
-            return ''.join(c for c in unicodedata.normalize('NFD', s)
-                           if unicodedata.category(c) != 'Mn').upper()
-        for frag in name_fragments:
-            frag_clean = strip_acc(frag)
-            for i, h in enumerate(headers):
-                if frag_clean in strip_acc(h):
-                    return i
-        return None
+    def gc(fragments, default):
+        """Get column index by fragment match."""
+        for frag in fragments:
+            for k, idx in hdr.items():
+                if frag in k:
+                    return idx
+        return default
 
-    c_expedi    = col(['EXPEDICION','EXPEDICI']) or 3
-    c_articulo  = col(['ARTICULO','ARTÍCULO'])   or 9
-    c_cantidad  = col(['CANTIDAD'])              or 8
-    c_entidad   = col(['ENTIDAD'])               or 13
-    c_pais      = col(['CODIGO DE PAIS','PAÍS','PAIS','COUNTRY']) or 18
-    c_order_id  = col(['IDENTIFICADOR'])         or 1
+    # Note: EXPEDICIÓN header is at col 3 but DATA is at col 4 (one right)
+    # This is because col D header = EXPEDICIÓN but col D data = None, col E data = value
+    # We detect this by checking which adjacent col actually has D26... values
+    expedi_hdr_idx = gc(['EXPEDICION','EXPEDICI'], 3)
+    # Check if data is in header col or one to the right
+    sample_vals = [str(rows[i][expedi_hdr_idx] or '') for i in range(1, min(5, len(rows)))]
+    if not any(v.startswith('D') for v in sample_vals):
+        expedi_hdr_idx += 1  # shift right
+
+    c_expedi   = expedi_hdr_idx
+    c_articulo = gc(['ARTICULO'], 9)
+    c_cantidad = gc(['CANTIDAD'], 8)
+    c_entidad  = gc(['ENTIDAD'], 13)
+    c_pais     = gc(['CODIGO DE PAIS', 'PAIS'], 18)
+    c_order_id = gc(['IDENTIFICADOR'], 1)
 
     records = []
-    for r in rows[header_idx + 1:]:
+    for r in rows[1:]:
         expedi = str(r[c_expedi] or '').strip()
-        if not expedi or expedi in ('None', ''):
+        if not expedi or expedi in ('None', 'nan', ''):
             continue
 
         articulo = str(r[c_articulo] or '').strip()
-        if not articulo:
+        if not articulo or articulo in ('None', 'nan', ''):
             continue
 
-        # Parse SKU and name from ARTÍCULO
+        # Parse SKU and name
         m_num = re.match(r'^(\d{3,6})\s*[-–]\s*(.*)$', articulo)
         m_axx = re.match(r'^(A\d{2}_\w+_\d+)\s*[-–]\s*(.*)$', articulo)
 
         if m_num:
-            sku  = str(int(m_num.group(1)))   # strip leading zeros
+            sku  = str(int(m_num.group(1)))
             name = m_num.group(2).strip()
         elif m_axx:
-            sku  = m_axx.group(1).strip()     # keep full A-prefix ref
+            sku  = m_axx.group(1).strip()
             name = m_axx.group(2).strip()
         else:
             sku  = articulo
             name = articulo
 
         marketplace = str(r[c_entidad] or '').strip()
-        country     = str(r[c_pais]    or '').strip().upper()
+        country     = str(r[c_pais] or '').strip().upper()
         if country not in VALID_COUNTRIES:
             country = 'ES'
 
         is_amazon = any(k in marketplace.lower() for k in AMAZON_KEYWORDS)
 
-        try:    qty = int(r[c_cantidad] or 1)
+        try:    qty = int(float(str(r[c_cantidad] or 1)))
         except: qty = 1
 
         records.append({
@@ -441,16 +442,13 @@ with tab_proc:
             with st.spinner('Leyendo Sinstocks…'):
                 df_sins = parse_sinstocks(path_sins)
                 if df_sins.empty or 'EXPEDICION' not in df_sins.columns:
-                    st.error('No se pudieron leer pedidos del fichero Sinstocks. Verifica que el fichero es correcto.')
-                    # Show debug info
+                    st.error('No se pudieron leer pedidos del fichero Sinstocks.')
                     try:
-                        wb_d = openpyxl.load_workbook(path_sins, read_only=True, data_only=True)
-                        ws_d = wb_d.active
-                        r0 = list(ws_d.iter_rows(max_row=1, values_only=True))[0]
-                        wb_d.close()
-                        st.caption(f"Cabeceras detectadas: {[str(v) for v in r0 if v]}")
+                        df_dbg = pd.read_excel(path_sins, nrows=2)
+                        st.caption(f"Columnas detectadas: {list(df_dbg.columns)}")
+                        st.caption(f"Primera fila: {df_dbg.iloc[0].to_dict() if len(df_dbg)>0 else 'vacío'}")
                     except Exception as e:
-                        st.caption(f"Error al leer: {e}")
+                        st.caption(f"Error: {e}")
                     st.stop()
                 if skip_dupes:
                     df_sins = df_sins[~df_sins['EXPEDICION'].str.upper().str.startswith('DUPLICADO')]
