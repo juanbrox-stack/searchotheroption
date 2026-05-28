@@ -150,6 +150,16 @@ def load_listing(path):
             if ref_num: sku_countries.setdefault(ref_num, set()).add(country)
     return sku_countries
 
+
+@st.cache_data
+def load_feed(path):
+    """Feed web Cecotec: mpn → url. Col C=link, col M=mpn."""
+    df = pd.read_excel(path, usecols=['link','mpn'], dtype=str)
+    df = df.dropna(subset=['mpn','link'])
+    # Normalize mpn same as norm_ref: strip leading zeros for numeric
+    df['REF'] = df['mpn'].apply(norm_ref)
+    return df.set_index('REF')['link'].to_dict()
+
 def parse_sinstocks(path):
     """
     sinstock.xlsx — headers in row 0, data from row 1.
@@ -414,15 +424,16 @@ with st.sidebar:
     fu_stock   = st.file_uploader('Stock Global',          type=['xlsx'], key='u_stock')
     fu_sins    = st.file_uploader('Sinstocks',             type=['xlsx'], key='u_sins')
     fu_listing = st.file_uploader('Listing Amazon',        type=['xlsx','txt','tsv','csv'], key='u_list')
+    fu_feed    = st.file_uploader('Feed Web Cecotec',        type=['xlsx'], key='u_feed')
 
     if st.button('💾 Guardar', type='primary', use_container_width=True):
         tmp = Path(tempfile.mkdtemp()); saved = 0
         for key, fu in [('nac',fu_nac),('inter',fu_inter),('stock',fu_stock),
-                        ('sins',fu_sins),('listing',fu_listing)]:
+                        ('sins',fu_sins),('listing',fu_listing),('feed',fu_feed)]:
             if fu:
                 p = tmp / fu.name; p.write_bytes(fu.read())
                 st.session_state[f'path_{key}'] = str(p); saved += 1
-        for fn in [load_tarifa_nac, load_tarifa_inter, load_stock, load_listing]:
+        for fn in [load_tarifa_nac, load_tarifa_inter, load_stock, load_listing, load_feed]:
             fn.clear()
         st.success(f'✅ {saved} fichero(s) guardados')
         st.rerun()
@@ -435,15 +446,19 @@ path_inter   = _find('inter',   'TARIFA_TURACO')
 path_stock   = _find('stock',   'Stock_Global')
 path_sins    = _find('sins',    'Sinstocks', 'sinstocks')
 path_listing = _find('listing', 'Informe_', 'listing', 'Listing')
+path_feed    = _find('feed',    'feed_Espan', 'feed_espan', 'feed_')
 if not path_listing:
     hits = glob.glob(str(UPLOAD_DIR/'*.txt')) + glob.glob(str(UPLOAD_DIR/'*listing*'))
     if hits: path_listing = hits[0]
+if not path_feed:
+    hits = glob.glob(str(UPLOAD_DIR/'*feed*'))
+    if hits: path_feed = hits[0]
 
 # Status
-cs = st.columns(5)
+cs = st.columns(6)
 for col, lbl, pth in zip(cs,
-    ['Tarifa Nac.','Tarifa Inter','Stock Global','Sinstocks','Listing Amazon'],
-    [path_nac, path_inter, path_stock, path_sins, path_listing]):
+    ['Tarifa Nac.','Tarifa Inter','Stock Global','Sinstocks','Listing Amazon','Feed Web'],
+    [path_nac, path_inter, path_stock, path_sins, path_listing, path_feed]):
     with col:
         (st.success if pth else st.warning)(f'{"✅" if pth else "⚠️"} {lbl}')
 
@@ -460,6 +475,7 @@ with tab_proc:
         tarifa_inter = load_tarifa_inter(path_inter)
         stocks       = load_stock(path_stock)
         listing_map  = load_listing(path_listing) if path_listing else {}
+        feed_map     = load_feed(path_feed) if path_feed else {}
 
         st.markdown('<div class="sec">⚙️ Configuración</div>', unsafe_allow_html=True)
         ca, cb, cc = st.columns(3)
@@ -578,13 +594,18 @@ with tab_res:
                 row  = r['row']
                 best = r['subs'].iloc[0]
                 delta = float(best.get('ΔPVP', 0) or 0)
+                ref_orig = row.get('SKU') or row.get('REF','')
+                ref_sust = str(best.get('REF',''))
+                url_orig = feed_map.get(str(ref_orig), '')
+                url_sust = feed_map.get(ref_sust, '')
                 table_rows.append({
                     'Expedición':        row['EXPEDICION'],
                     'País':              row['PAIS'],
                     'Canal':             row['MARKETPLACE'][:30],
                     'Amazon':            '✅' if row['IS_AMAZON'] else '—',
-                    'SKU original':      row.get('SKU') or row.get('REF',''),
+                    'SKU original':      ref_orig,
                     'Producto original': r['nombre_orig'][:55],
+                    'URL original':      url_orig,
                     'PVP orig. (€)':     round(r['pvp_orig'], 2),
                     'Subfamilia':        r['subfamilia'],
                     '→ SKU sustituto':   str(best.get('REFERENCIA','')),
@@ -593,10 +614,11 @@ with tab_res:
                     'PVP sust. (€)':     round(float(best.get('PVP',0) or 0), 2),
                     'Δ PVP (€)':         delta,
                     'Stock disponible':  int(best.get('STOCK',0) or 0),
+                    'URL sustituto':     url_sust,
                 })
                 output_rows.append({
                     'NUMBER':      row['EXPEDICION'],
-                    'ARTICLE':     row.get('SKU') or row.get('REF',''),
+                    'ARTICLE':     ref_orig,
                     'NEW_ARTICLE': str(best.get('REFERENCIA','')),
                 })
 
@@ -605,6 +627,8 @@ with tab_res:
                 'PVP orig. (€)': st.column_config.NumberColumn(format='%.2f €'),
                 'PVP sust. (€)': st.column_config.NumberColumn(format='%.2f €'),
                 'Δ PVP (€)':     st.column_config.NumberColumn(format='%.2f €'),
+                'URL original':  st.column_config.LinkColumn('URL original',  display_text='🔗 Ver'),
+                'URL sustituto': st.column_config.LinkColumn('URL sustituto', display_text='🔗 Ver'),
             })
 
             dc1, dc2 = st.columns(2)
@@ -624,27 +648,38 @@ with tab_res:
                 best = r['subs'].iloc[0]
                 delta = float(best.get('ΔPVP',0) or 0)
                 sign  = f'+{delta:.2f}€' if delta>0 else (f'{delta:.2f}€' if delta<0 else '±0')
+                ref_orig = row.get('SKU') or row.get('REF','')
+                ref_sust = str(best.get('REF',''))
+                url_orig = feed_map.get(str(ref_orig), '')
+                url_sust = feed_map.get(ref_sust, '')
                 with st.expander(
                     f"**{row['EXPEDICION']}** · {row['PAIS']} "
                     f"{'🛒' if row['IS_AMAZON'] else ''} · "
-                    f"SKU {row.get('SKU') or row.get('REF','')} → **{best.get('REFERENCIA','')}** ({sign} PVP)"
+                    f"SKU {ref_orig} → **{best.get('REFERENCIA','')}** ({sign} PVP)"
                 ):
                     cc1, cc2 = st.columns(2)
                     with cc1:
                         st.markdown('**📦 Pedido original**')
                         st.markdown(f"Expedición: `{row['EXPEDICION']}`")
                         st.markdown(f"Canal: `{row['MARKETPLACE']}`")
-                        st.markdown(f"SKU: `{row.get('SKU') or row.get('REF','')}` · País: **{row['PAIS']}**")
+                        st.markdown(f"SKU: `{ref_orig}` · País: **{row['PAIS']}**")
                         st.markdown(f"**{r['nombre_orig']}**")
                         st.markdown(f"PVP PUB: **{r['pvp_orig']:.2f}€** · Subfamilia: {r['subfamilia']}")
+                        if url_orig:
+                            st.markdown(f"[🔗 Ver producto en cecotec.es]({url_orig})")
                     with cc2:
                         st.markdown('**🔄 Sustitutos con stock**')
-                        show = r['subs'][['REFERENCIA','NOMBRE COMPLETO','PVP','ΔPVP','STOCK']].rename(
+                        # Add URL to subs dataframe
+                        subs_show = r['subs'][['REFERENCIA','NOMBRE COMPLETO','PVP','ΔPVP','STOCK']].copy()
+                        subs_show['URL'] = subs_show['REFERENCIA'].apply(
+                            lambda ref: feed_map.get(norm_ref(str(ref)), ''))
+                        subs_show = subs_show.rename(
                             columns={'NOMBRE COMPLETO':'Nombre','PVP':'PVP PUB (€)','ΔPVP':'Δ PVP'})
-                        st.dataframe(show.head(5), use_container_width=True, hide_index=True,
+                        st.dataframe(subs_show.head(5), use_container_width=True, hide_index=True,
                             column_config={
                                 'PVP PUB (€)': st.column_config.NumberColumn(format='%.2f €'),
                                 'Δ PVP':       st.column_config.NumberColumn(format='%.2f €'),
+                                'URL':         st.column_config.LinkColumn('URL', display_text='🔗 Ver'),
                             })
 
     with t2:
