@@ -552,6 +552,7 @@ with tab_proc:
 
             prog.empty()
             st.session_state['results'] = results
+            st.session_state['selections'] = {}  # reset selections for new results
             st.toast('✅ Procesado completado', icon='🎯')
             st.components.v1.html("""
             <script>
@@ -592,7 +593,10 @@ with tab_res:
             table_rows, output_rows = [], []
             for r in con_sust:
                 row  = r['row']
-                best = r['subs'].iloc[0]
+                expedi   = row['EXPEDICION']
+                sel_idx  = st.session_state.get('selections', {}).get(expedi, 0)
+                sel_idx  = min(sel_idx, len(r['subs'])-1)
+                best     = r['subs'].iloc[sel_idx]
                 delta = float(best.get('ΔPVP', 0) or 0)
                 ref_orig = row.get('SKU') or row.get('REF','')
                 ref_sust = str(best.get('REF',''))
@@ -623,6 +627,12 @@ with tab_res:
                 })
 
             df_t = pd.DataFrame(table_rows)
+
+            # Note if there are custom selections
+            selections = st.session_state.get('selections', {})
+            if any(v > 0 for v in selections.values()):
+                st.info(f"⚠️ Tienes **{sum(1 for v in selections.values() if v > 0)} sustitutos modificados** manualmente. La tabla y descarga ya reflejan tu selección.")
+
             st.dataframe(df_t, use_container_width=True, hide_index=True, column_config={
                 'PVP orig. (€)': st.column_config.NumberColumn(format='%.2f €'),
                 'PVP sust. (€)': st.column_config.NumberColumn(format='%.2f €'),
@@ -642,25 +652,44 @@ with tab_res:
                     df_t.to_csv(index=False).encode(), 'sustitutos.csv',
                     'text/csv', use_container_width=True)
 
-            st.markdown('<div class="sec">🔎 Detalle por pedido</div>', unsafe_allow_html=True)
-            for r in con_sust:
+            st.markdown('<div class="sec">🔎 Detalle y selección de sustituto por pedido</div>', unsafe_allow_html=True)
+            scol1, scol2 = st.columns([5,1])
+            with scol1:
+                st.caption("Expande cada pedido para cambiar el sustituto sugerido. La tabla y descarga se actualizan automáticamente.")
+            with scol2:
+                if st.button("↺ Reset selecciones", key="reset_sel"):
+                    st.session_state['selections'] = {}
+                    st.rerun()
+
+            # Track selections (default = first substitute)
+            if 'selections' not in st.session_state:
+                st.session_state['selections'] = {}
+
+            for idx, r in enumerate(con_sust):
                 row  = r['row']
                 best = r['subs'].iloc[0]
-                delta = float(best.get('ΔPVP',0) or 0)
-                sign  = f'+{delta:.2f}€' if delta>0 else (f'{delta:.2f}€' if delta<0 else '±0')
+                expedi   = row['EXPEDICION']
                 ref_orig = row.get('SKU') or row.get('REF','')
-                ref_sust = str(best.get('REF',''))
+
+                # Get current selection for this order (default = index 0)
+                sel_idx  = st.session_state['selections'].get(expedi, 0)
+                sel_idx  = min(sel_idx, len(r['subs'])-1)
+                selected = r['subs'].iloc[sel_idx]
+
+                delta = float(selected.get('ΔPVP',0) or 0)
+                sign  = f'+{delta:.2f}€' if delta>0 else (f'{delta:.2f}€' if delta<0 else '±0')
                 url_orig = feed_map.get(str(ref_orig), '')
-                url_sust = feed_map.get(ref_sust, '')
+                url_sust = feed_map.get(str(selected.get('REF','')), '')
+
                 with st.expander(
-                    f"**{row['EXPEDICION']}** · {row['PAIS']} "
+                    f"**{expedi}** · {row['PAIS']} "
                     f"{'🛒' if row['IS_AMAZON'] else ''} · "
-                    f"SKU {ref_orig} → **{best.get('REFERENCIA','')}** ({sign} PVP)"
+                    f"SKU {ref_orig} → **{selected.get('REFERENCIA','')}** ({sign} PVP)"
                 ):
                     cc1, cc2 = st.columns(2)
                     with cc1:
                         st.markdown('**📦 Pedido original**')
-                        st.markdown(f"Expedición: `{row['EXPEDICION']}`")
+                        st.markdown(f"Expedición: `{expedi}`")
                         st.markdown(f"Canal: `{row['MARKETPLACE']}`")
                         st.markdown(f"SKU: `{ref_orig}` · País: **{row['PAIS']}**")
                         st.markdown(f"**{r['nombre_orig']}**")
@@ -669,18 +698,36 @@ with tab_res:
                             st.markdown(f"[🔗 Ver producto en cecotec.es]({url_orig})")
                     with cc2:
                         st.markdown('**🔄 Sustitutos con stock**')
-                        # Add URL to subs dataframe
-                        subs_show = r['subs'][['REFERENCIA','NOMBRE COMPLETO','PVP','ΔPVP','STOCK']].copy()
-                        subs_show['URL'] = subs_show['REFERENCIA'].apply(
-                            lambda ref: feed_map.get(norm_ref(str(ref)), ''))
-                        subs_show = subs_show.rename(
-                            columns={'NOMBRE COMPLETO':'Nombre','PVP':'PVP PUB (€)','ΔPVP':'Δ PVP'})
-                        st.dataframe(subs_show.head(5), use_container_width=True, hide_index=True,
-                            column_config={
-                                'PVP PUB (€)': st.column_config.NumberColumn(format='%.2f €'),
-                                'Δ PVP':       st.column_config.NumberColumn(format='%.2f €'),
-                                'URL':         st.column_config.LinkColumn('URL', display_text='🔗 Ver'),
-                            })
+
+                        # Build options for radio selector
+                        subs_df = r['subs'].reset_index(drop=True)
+                        options = []
+                        for _, sub in subs_df.iterrows():
+                            pvp_s = float(sub.get('PVP',0) or 0)
+                            dp    = float(sub.get('ΔPVP',0) or 0)
+                            sign_s = f'+{dp:.2f}€' if dp>0 else (f'{dp:.2f}€' if dp<0 else '±0')
+                            options.append(
+                                f"{sub.get('REFERENCIA','')} · {str(sub.get('NOMBRE COMPLETO',''))[:40]} · {pvp_s:.2f}€ ({sign_s}) · Stock: {int(sub.get('STOCK',0))}"
+                            )
+
+                        chosen = st.radio(
+                            "Selecciona sustituto:",
+                            options,
+                            index=sel_idx,
+                            key=f"radio_{expedi}_{idx}",
+                            label_visibility="collapsed",
+                        )
+                        new_idx = options.index(chosen)
+                        if new_idx != sel_idx:
+                            st.session_state['selections'][expedi] = new_idx
+                            st.rerun()
+
+                        # Show selected details
+                        selected_row = subs_df.iloc[new_idx]
+                        url_sel = feed_map.get(str(selected_row.get('REF','')), '')
+                        st.markdown(f"✅ **Seleccionado: {selected_row.get('REFERENCIA','')}** — {str(selected_row.get('NOMBRE COMPLETO',''))[:50]}")
+                        if url_sel:
+                            st.markdown(f"[🔗 Ver en cecotec.es]({url_sel})")
 
     with t2:
         if not sin_sust:
