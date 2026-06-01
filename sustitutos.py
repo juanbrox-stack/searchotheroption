@@ -14,6 +14,11 @@ import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 import re, io, glob, tempfile
 from pathlib import Path
+import smtplib
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from email.mime.base import MIMEBase
+from email import encoders
 
 st.set_page_config(page_title="Sustitutos Cecotec", page_icon="🔄", layout="wide")
 
@@ -159,6 +164,91 @@ def load_feed(path):
     # Normalize mpn same as norm_ref: strip leading zeros for numeric
     df['REF'] = df['mpn'].apply(norm_ref)
     return df.set_index('REF')['link'].to_dict()
+
+def get_smtp():
+    try:
+        return (st.secrets["correo"]["servidor_smtp"],
+                int(st.secrets["correo"]["puerto"]),
+                st.secrets["correo"]["usuario"],
+                st.secrets["correo"]["password"])
+    except: return None
+
+@st.cache_data
+def load_remitentes(b: bytes):
+    df = pd.read_excel(io.BytesIO(b))
+    df.columns = [c.strip() for c in df.columns]
+    return df
+
+def send_cancelados_email(to: str, asunto: str, df_cancel: pd.DataFrame, smtp_cfg):
+    server, port, user, pwd = smtp_cfg
+    msg = MIMEMultipart("mixed")
+    msg["Subject"] = asunto
+    msg["From"]    = user
+    msg["To"]      = to
+
+    rows_html = "".join(
+        f'<tr style="background:{"#f8fafc" if i%2==0 else "#fff"}">'
+        + "".join(
+            f'<td style="padding:7px 12px;border-bottom:1px solid #e2e8f0">{v}</td>'
+            for v in [row.get("Expedición",""), row.get("Canal",""), row.get("SKU",""),
+                      row.get("Producto",""), row.get("País",""), row.get("Motivo","")]
+        ) + "</tr>"
+        for i, (_, row) in enumerate(df_cancel.iterrows())
+    )
+    html = f"""<html><body style="font-family:Arial;color:#141413;max-width:800px;margin:0 auto">
+    <div style="background:#141413;padding:18px 24px;border-radius:10px 10px 0 0;border-bottom:3px solid #3EB1C8">
+      <h2 style="color:#fff;margin:0;font-size:19px">❌ {asunto}</h2>
+    </div>
+    <div style="padding:18px 24px;border:1px solid #e8e8e4;border-top:none;border-radius:0 0 10px 10px">
+      <table style="width:100%;border-collapse:collapse;font-size:13px">
+        <thead><tr style="background:#141413;color:#fff">
+          <th style="padding:8px 12px;text-align:left">Expedición</th>
+          <th style="padding:8px 12px;text-align:left">Canal</th>
+          <th style="padding:8px 12px;text-align:left">SKU</th>
+          <th style="padding:8px 12px;text-align:left">Producto</th>
+          <th style="padding:8px 12px;text-align:left">País</th>
+          <th style="padding:8px 12px;text-align:left">Motivo</th>
+        </tr></thead>
+        <tbody>{rows_html}</tbody>
+      </table>
+      <p style="font-size:11px;color:#94a3b8;margin-top:16px">Generado por Gestor de Sustitutos Cecotec</p>
+    </div></body></html>"""
+
+    msg.attach(MIMEText(html, "html", "utf-8"))
+
+    # Excel attachment
+    wb = openpyxl.Workbook(); ws = wb.active; ws.title = "Cancelados"
+    thin = Side(style="thin", color="FFD0D0CC")
+    brd  = Border(top=thin, left=thin, right=thin, bottom=thin)
+    headers = ["Expedición","Canal","SKU","Producto","País","PVP (€)","Subfamilia","Motivo"]
+    for ci, h in enumerate(headers, 1):
+        c = ws.cell(row=1, column=ci, value=h)
+        c.font = Font(bold=True, color="FFFFFFFF", name="Arial", size=10)
+        c.fill = PatternFill("solid", start_color="FF141413")
+        c.alignment = Alignment(horizontal="center"); c.border = brd
+    for ri, (_, row) in enumerate(df_cancel.iterrows(), 2):
+        fill = PatternFill("solid", start_color="FFF5F5F3" if ri%2==0 else "FFFFFFFF")
+        for ci, key in enumerate(["Expedición","Canal","SKU","Producto","País","PVP (€)","Subfamilia","Motivo"], 1):
+            c = ws.cell(row=ri, column=ci, value=row.get(key,""))
+            c.font = Font(name="Arial", size=10); c.fill = fill; c.border = brd
+    for i, w in enumerate([15,25,14,40,6,10,20,35], 1):
+        ws.column_dimensions[openpyxl.utils.get_column_letter(i)].width = w
+    ws.freeze_panes = "A2"
+    buf = io.BytesIO(); wb.save(buf); xlsx_bytes = buf.getvalue()
+
+    part = MIMEBase("application", "octet-stream")
+    part.set_payload(xlsx_bytes)
+    encoders.encode_base64(part)
+    part.add_header("Content-Disposition", 'attachment; filename="cancelados.xlsx"')
+    msg.attach(part)
+
+    if int(port) == 465:
+        with smtplib.SMTP_SSL(server, int(port)) as s:
+            s.login(user, pwd); s.sendmail(user, to, msg.as_string())
+    else:
+        with smtplib.SMTP(server, int(port)) as s:
+            s.ehlo(); s.starttls(); s.ehlo()
+            s.login(user, pwd); s.sendmail(user, to, msg.as_string())
 
 def parse_sinstocks(path):
     """
@@ -425,6 +515,7 @@ with st.sidebar:
     fu_sins    = st.file_uploader('Sinstocks',             type=['xlsx'], key='u_sins')
     fu_listing = st.file_uploader('Listing Amazon',        type=['xlsx','txt','tsv','csv'], key='u_list')
     fu_feed    = st.file_uploader('Feed Web Cecotec',        type=['xlsx'], key='u_feed')
+    fu_remit   = st.file_uploader('Remitentes (Canal/Email)', type=['xlsx'], key='u_remit')
 
     if st.button('💾 Guardar', type='primary', use_container_width=True):
         tmp = Path(tempfile.mkdtemp()); saved = 0
@@ -433,6 +524,9 @@ with st.sidebar:
             if fu:
                 p = tmp / fu.name; p.write_bytes(fu.read())
                 st.session_state[f'path_{key}'] = str(p); saved += 1
+        if fu_remit:
+            st.session_state['remitentes_bytes'] = fu_remit.read()
+            saved += 1
         for fn in [load_tarifa_nac, load_tarifa_inter, load_stock, load_listing, load_feed]:
             fn.clear()
         st.success(f'✅ {saved} fichero(s) guardados')
@@ -465,7 +559,7 @@ for col, lbl, pth in zip(cs,
 data_ok = all([path_nac, path_inter, path_stock, path_sins])
 
 # ── TABS ───────────────────────────────────────────────────────────────────────
-tab_proc, tab_res = st.tabs(['⚙️ Procesar', '📊 Resultados'])
+tab_proc, tab_manual, tab_res = st.tabs(['⚙️ Procesar', '🔍 Buscar SKU', '📊 Resultados'])
 
 with tab_proc:
     if not data_ok:
@@ -561,6 +655,85 @@ with tab_proc:
             let n=0,iv=setInterval(()=>{if(click()||++n>20)clearInterval(iv);},150);
             </script>""", height=0)
             st.rerun()
+
+with tab_manual:
+    if not data_ok:
+        st.warning('👈 Carga los ficheros en el panel izquierdo para continuar.')
+    else:
+        st.markdown('<div class="sec">🔍 Buscar sustituto por SKU</div>', unsafe_allow_html=True)
+        st.caption("Introduce un SKU/referencia Cecotec para encontrar sus posibles sustitutos con stock.")
+
+        col_a, col_b, col_c = st.columns([2, 1, 1])
+        with col_a:
+            manual_sku = st.text_input("SKU / Referencia", placeholder="ej: 8425  o  A01_EU01_106744")
+        with col_b:
+            manual_country = st.selectbox("País / Tarifa", ['ES','FR','IT','DE','PT','PL'], key="m_country")
+            manual_amazon  = st.checkbox("Pedido Amazon", value=False, key="m_amazon")
+        with col_c:
+            manual_max = st.number_input("Máx. incremento PVP (€)", 0.0, 50.0, 10.0, 1.0, key="m_max")
+
+        if st.button("🔍 Buscar sustitutos", type="primary", use_container_width=True, key="btn_manual_search"):
+            if not manual_sku.strip():
+                st.error("Introduce un SKU.")
+            else:
+                sku = norm_ref(manual_sku.strip())
+                # Load data (already cached)
+                tarifa_nac   = load_tarifa_nac(path_nac)
+                tarifa_inter = load_tarifa_inter(path_inter)
+                stocks       = load_stock(path_stock)
+                feed_map     = load_feed(path_feed) if path_feed else {}
+
+                tar_row, df_tar, pvp_col, neto_col = get_tarifa(
+                    sku, manual_country, manual_amazon, tarifa_nac, tarifa_inter)
+
+                if tar_row is None:
+                    st.error(f"SKU `{sku}` no encontrado en la tarifa {'internacional ' + manual_country if manual_amazon and manual_country != 'ES' else 'nacional'}.")
+                else:
+                    try:
+                        pvp_orig = float(pd.to_numeric(tar_row.get(pvp_col, 0), errors='coerce') or 0)
+                    except:
+                        pvp_orig = 0.0
+                    subfamilia  = str(tar_row.get('SUBFAMILIA',''))
+                    nombre_orig = str(tar_row.get('NOMBRE COMPLETO', sku))
+                    url_orig    = feed_map.get(str(sku), '')
+
+                    # Product info
+                    st.success(f"✅ **{nombre_orig}** · Subfamilia: {subfamilia} · PVP PUB: **{pvp_orig:.2f}€**")
+                    if url_orig:
+                        st.markdown(f"[🔗 Ver en cecotec.es]({url_orig})")
+
+                    # Find substitutes
+                    subs = find_substitutes(tar_row, pvp_col, pvp_orig, sku,
+                                            manual_country, manual_amazon,
+                                            tarifa_nac, tarifa_inter, stocks, manual_max)
+
+                    if subs.empty:
+                        st.warning(f"No hay sustitutos con stock en subfamilia **{subfamilia}** con PVP entre {pvp_orig:.2f}€ y {pvp_orig + manual_max:.2f}€.")
+                    else:
+                        st.markdown(f"**{len(subs)} sustituto(s) encontrado(s):**")
+
+                        # Enrich with URL
+                        subs_display = subs[['REFERENCIA','NOMBRE COMPLETO','PVP','ΔPVP','STOCK']].copy()
+                        subs_display['URL'] = subs['REF'].apply(lambda r: feed_map.get(str(r), ''))
+                        subs_display = subs_display.rename(columns={
+                            'NOMBRE COMPLETO': 'Nombre',
+                            'PVP':             'PVP PUB (€)',
+                            'ΔPVP':            'Δ PVP (€)',
+                        })
+
+                        st.dataframe(subs_display, use_container_width=True, hide_index=True,
+                            column_config={
+                                'PVP PUB (€)': st.column_config.NumberColumn(format='%.2f €'),
+                                'Δ PVP (€)':   st.column_config.NumberColumn(format='%.2f €'),
+                                'URL':         st.column_config.LinkColumn('URL', display_text='🔗 Ver'),
+                            })
+
+                        # Download
+                        st.download_button(
+                            "⬇️ Descargar CSV",
+                            subs_display.drop(columns=['URL']).to_csv(index=False).encode(),
+                            f"sustitutos_{sku}.csv", "text/csv"
+                        )
 
 with tab_res:
     if 'results' not in st.session_state:
@@ -754,6 +927,120 @@ with tab_res:
             st.warning(f"⚠️ **{len(df_c)} pedidos** sin sustituto — deben cancelarse.")
             st.dataframe(df_c, use_container_width=True, hide_index=True,
                 column_config={'PVP (€)': st.column_config.NumberColumn(format='%.2f €')})
+
+            # ── Descarga CSV ──────────────────────────────────────────────────
             st.download_button('⬇️ CSV cancelaciones',
                 df_c.to_csv(index=False).encode(), 'cancelaciones.csv',
                 'text/csv', use_container_width=True)
+
+            # ── Email widget ──────────────────────────────────────────────────
+            st.markdown("---")
+            st.markdown('<div class="sec">📧 Enviar cancelaciones por email</div>', unsafe_allow_html=True)
+
+            smtp_cfg      = get_smtp()
+            remit_bytes   = st.session_state.get('remitentes_bytes')
+            remitentes_df = load_remitentes(remit_bytes) if remit_bytes else None
+
+            if not smtp_cfg:
+                st.info("⚠️ SMTP no configurado. Añade `[correo]` en **Streamlit Secrets** para enviar emails:\n```toml\n[correo]\nservidor_smtp = \"smtp.gmail.com\"\npuerto = 587\nusuario = \"tu@email.com\"\npassword = \"tu_password\"\n```")
+            if remitentes_df is None:
+                st.info("Sube el fichero de **Remitentes** (columnas: Canal, Email, Nombre) en el panel izquierdo para habilitar el envío.")
+
+            if smtp_cfg and remitentes_df is not None:
+                # Build remitente options
+                ec = next((c for c in remitentes_df.columns if "mail"  in c.lower()), None)
+                cc = next((c for c in remitentes_df.columns if "canal" in c.lower()), None)
+                nc = next((c for c in remitentes_df.columns if "nombre" in c.lower()), None)
+                rem_opciones = ["— elige destinatario —"]
+                rem_map = {}
+                if ec and cc:
+                    entries = sorted([
+                        (f"{r[cc]} — {r[ec]}", (str(r[ec]).strip(), str(r[nc]).strip() if nc else str(r[cc])))
+                        for _, r in remitentes_df.iterrows()
+                    ], key=lambda x: x[0].lower())
+                    for lbl, val in entries:
+                        rem_opciones.append(lbl)
+                        rem_map[lbl] = val
+
+                # Build pedido labels for multiselect
+                pedido_labels = [
+                    f"{row['Expedición']} · {row['Canal']} · SKU {row['SKU']} · {row['País']}"
+                    for _, row in df_c.iterrows()
+                ]
+
+                # Show previous send result
+                if '_cancel_msg' in st.session_state:
+                    msg_type, msg_text = st.session_state.pop('_cancel_msg')
+                    if msg_type == "ok":    st.success(msg_text)
+                    elif msg_type == "warn": st.warning(msg_text)
+                    else:                    st.error(msg_text)
+
+                # Track sent
+                if '_cancel_sent' not in st.session_state:
+                    st.session_state['_cancel_sent'] = set()
+                sent_set = st.session_state['_cancel_sent']
+
+                # HTML table preview
+                rows_html = ""
+                for i, (_, row) in enumerate(df_c.iterrows()):
+                    sent    = i in sent_set
+                    bg      = "#f0fdf4" if sent else "#fff1f2"
+                    badge   = "✅ Enviado" if sent else "CANCELAR"
+                    badge_bg= "#15803d" if sent else "#b91c1c"
+                    rows_html += (
+                        f'<tr style="background:{bg}">'
+                        f'<td style="padding:6px 10px;border-bottom:1px solid #e8e8e4;font-weight:600">{row["Expedición"]}</td>'
+                        f'<td style="padding:6px 10px;border-bottom:1px solid #e8e8e4">{row["Canal"]}</td>'
+                        f'<td style="padding:6px 10px;border-bottom:1px solid #e8e8e4"><code>{row["SKU"]}</code></td>'
+                        f'<td style="padding:6px 10px;border-bottom:1px solid #e8e8e4">{row["Producto"][:40]}</td>'
+                        f'<td style="padding:6px 10px;border-bottom:1px solid #e8e8e4">{row["País"]}</td>'
+                        f'<td style="padding:6px 10px;border-bottom:1px solid #e8e8e4">{row["Motivo"][:40]}</td>'
+                        f'<td style="padding:6px 10px;border-bottom:1px solid #e8e8e4">'
+                        f'<span style="background:{badge_bg};color:#fff;padding:2px 8px;border-radius:8px;font-size:11px;font-weight:700">{badge}</span></td></tr>'
+                    )
+                st.markdown(
+                    f'<table style="width:100%;border-collapse:collapse;font-size:13px;margin-bottom:12px">'
+                    f'<thead><tr style="background:#141413;color:#fff">'
+                    f'<th style="padding:7px 10px;text-align:left">Expedición</th>'
+                    f'<th style="padding:7px 10px;text-align:left">Canal</th>'
+                    f'<th style="padding:7px 10px;text-align:left">SKU</th>'
+                    f'<th style="padding:7px 10px;text-align:left">Producto</th>'
+                    f'<th style="padding:7px 10px;text-align:left">País</th>'
+                    f'<th style="padding:7px 10px;text-align:left">Motivo</th>'
+                    f'<th style="padding:7px 10px;text-align:left">Estado</th>'
+                    f'</tr></thead><tbody>{rows_html}</tbody></table>',
+                    unsafe_allow_html=True
+                )
+
+                with st.form(key="cancel_email_form", clear_on_submit=False):
+                    rem_sel     = st.selectbox("Destinatario", rem_opciones)
+                    asunto      = st.text_input("Asunto", value=f"Pedidos a cancelar — {len(df_c)} sin sustituto")
+                    pedidos_sel = st.multiselect(
+                        "Pedidos a incluir en el email",
+                        options=pedido_labels,
+                        default=pedido_labels,
+                    )
+                    submitted = st.form_submit_button("📤 Enviar email", type="primary")
+
+                if submitted:
+                    email_dest, _ = rem_map.get(rem_sel, (None, None))
+                    if not email_dest:
+                        st.session_state['_cancel_msg'] = ("warn", "⚠️ Elige un destinatario válido")
+                    elif not pedidos_sel:
+                        st.session_state['_cancel_msg'] = ("warn", "⚠️ Selecciona al menos un pedido")
+                    else:
+                        idx_sel  = [i for i, lbl in enumerate(pedido_labels) if lbl in pedidos_sel]
+                        df_envio = df_c.iloc[idx_sel].copy()
+                        try:
+                            send_cancelados_email(email_dest, asunto, df_envio, smtp_cfg)
+                            for i in idx_sel:
+                                st.session_state['_cancel_sent'].add(i)
+                            st.session_state['_cancel_msg'] = ("ok", f"✅ Enviado a {email_dest} ({len(df_envio)} cancelaciones)")
+                        except Exception as e:
+                            st.session_state['_cancel_msg'] = ("err", f"❌ Error al enviar: {e}")
+                    st.rerun()
+
+                if sent_set:
+                    if st.button("↩ Limpiar enviados", key="cancel_clear_sent"):
+                        st.session_state['_cancel_sent'] = set()
+                        st.rerun()
