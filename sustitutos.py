@@ -342,6 +342,7 @@ def parse_sinstocks(path):
             'MARKETPLACE': marketplace,
             'IS_AMAZON':   is_amazon,
             'ORDER_ID':    r[c_order_id],
+            'NUM_PEDIDO_CLIENTE': str(r[c_num_ped] or '').strip() if c_num_ped is not None else '',
         })
     return pd.DataFrame(records)
 
@@ -777,6 +778,7 @@ with tab_res:
                 url_sust = feed_map.get(ref_sust, '')
                 table_rows.append({
                     'Expedición':        row['EXPEDICION'],
+                    'Nº Pedido Cliente': row.get('NUM_PEDIDO_CLIENTE',''),
                     'País':              row['PAIS'],
                     'Canal':             row['MARKETPLACE'][:30],
                     'Amazon':            '✅' if row['IS_AMAZON'] else '—',
@@ -854,15 +856,24 @@ with tab_res:
                 url_orig = feed_map.get(str(ref_orig), '')
                 url_sust = feed_map.get(str(selected.get('REF','')), '')
 
+                # Count how many other orders share this SKU
+                sku_count = sum(
+                    1 for r2 in con_sust
+                    if (r2['row'].get('SKU') or r2['row'].get('REF','')) == ref_orig
+                )
+                sku_badge = f" · 🔗 {sku_count}×" if sku_count > 1 else ""
+
                 with st.expander(
                     f"**{expedi}** · {row['PAIS']} "
                     f"{'🛒' if row['IS_AMAZON'] else ''} · "
-                    f"SKU {ref_orig} → **{selected.get('REFERENCIA','')}** ({sign} PVP)"
+                    f"SKU {ref_orig}{sku_badge} → **{selected.get('REFERENCIA','')}** ({sign} PVP)"
                 ):
                     cc1, cc2 = st.columns(2)
                     with cc1:
                         st.markdown('**📦 Pedido original**')
                         st.markdown(f"Expedición: `{expedi}`")
+                        if row.get('NUM_PEDIDO_CLIENTE'):
+                            st.markdown(f"Nº Pedido Cliente: `{row['NUM_PEDIDO_CLIENTE']}`")
                         st.markdown(f"Canal: `{row['MARKETPLACE']}`")
                         st.markdown(f"SKU: `{ref_orig}` · País: **{row['PAIS']}**")
                         st.markdown(f"**{r['nombre_orig']}**")
@@ -892,7 +903,31 @@ with tab_res:
                         )
                         new_idx = options.index(chosen)
                         if new_idx != sel_idx:
+                            # Apply to this expedicion
                             st.session_state['selections'][expedi] = new_idx
+                            # Apply same choice to ALL other expediciones with the same SKU original
+                            same_sku_expeds = [
+                                r2['row']['EXPEDICION']
+                                for r2 in con_sust
+                                if (r2['row'].get('SKU') or r2['row'].get('REF','')) == ref_orig
+                                and r2['row']['EXPEDICION'] != expedi
+                            ]
+                            if same_sku_expeds:
+                                # Find the same substitute by REFERENCIA in other pedidos' subs lists
+                                chosen_ref = subs_df.iloc[new_idx].get('REFERENCIA','')
+                                for other_expedi in same_sku_expeds:
+                                    other_r = next((x for x in con_sust if x['row']['EXPEDICION'] == other_expedi), None)
+                                    if other_r is not None:
+                                        other_subs = other_r['subs'].reset_index(drop=True)
+                                        # Find same referencia in other subs list
+                                        match_idx = other_subs[other_subs['REFERENCIA'].astype(str) == str(chosen_ref)].index
+                                        if len(match_idx) > 0:
+                                            st.session_state['selections'][other_expedi] = int(match_idx[0])
+                                        else:
+                                            # Fallback: use same index if available
+                                            st.session_state['selections'][other_expedi] = min(new_idx, len(other_subs)-1)
+                                applied = len(same_sku_expeds)
+                                st.toast(f"✅ Sustituto aplicado a {applied + 1} pedido(s) con SKU {ref_orig}", icon="🔄")
                             st.rerun()
 
                         # Show selected details
@@ -914,6 +949,7 @@ with tab_res:
                           else f"Sin sustituto con stock en subfamilia '{r['subfamilia']}'")
                 cancel_rows.append({
                     'Expedición':   row.get('EXPEDICION',''),
+                    'Nº Pedido Cliente': row.get('NUM_PEDIDO_CLIENTE',''),
                     'País':         row.get('PAIS',''),
                     'Canal':        str(row.get('MARKETPLACE',''))[:35],
                     'Amazon':       '✅' if row.get('IS_AMAZON') else '—',
