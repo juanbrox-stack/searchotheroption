@@ -380,7 +380,25 @@ def get_stock_for_ref(sku, country, is_amazon, stocks):
             return int(df[mask].iloc[0]['STOCK'] or 0)
     return 0
 
-def extract_size(text: str) -> str | None:
+def extract_color(text: str) -> str | None:
+    """Extract color from product name. Returns normalized color or None."""
+    text = str(text).lower()
+    COLORS = {
+        'negro': ['negro', 'black', 'negra'],
+        'blanco': ['blanco', 'white', 'blanca'],
+        'rojo':   ['rojo', 'red', 'roja'],
+        'azul':   ['azul', 'blue'],
+        'gris':   ['gris', 'grey', 'gray'],
+        'verde':  ['verde', 'green'],
+        'rosa':   ['rosa', 'pink'],
+        'plata':  ['plata', 'silver', 'plateado'],
+        'dorado': ['dorado', 'gold', 'oro'],
+    }
+    for color, variants in COLORS.items():
+        if any(f' {v}' in f' {text} ' or f'_{v}' in text or f'-{v}' in text
+               for v in variants):
+            return color
+    return None
     """Extract dimensions like 140x190, 80x200, 135x190 from product name."""
     m = re.search(r'\b(\d{2,3})[xX×](\d{2,3})\b', str(text))
     if m:
@@ -411,9 +429,11 @@ def find_substitutes(tar_row, pvp_col, pvp_orig, sku_orig,
     familia    = str(tar_row.get('FAMILIA',''))
     nombre_orig_full = str(tar_row.get('NOMBRE COMPLETO',''))
 
-    # Extract size from original product name (e.g. 140x190)
-    orig_size = extract_size(nombre_orig_full)
-    # Check if this family requires size matching
+    # Extract original color and size
+    orig_size  = extract_size(nombre_orig_full)
+    orig_color = extract_color(nombre_orig_full)
+
+    # Size filter: for mattresses/beds must match exactly
     needs_size_match = orig_size and any(
         s in subfamilia.lower() or s in familia.lower()
         for s in SIZE_SENSITIVE_FAMILIES
@@ -437,10 +457,16 @@ def find_substitutes(tar_row, pvp_col, pvp_orig, sku_orig,
         mask &= pvp_vals >= pvp_orig
         mask &= pvp_vals <= (pvp_orig + max_extra)
 
-    # Size filter for mattresses and similar (must match dimensions exactly)
+    # Size filter for mattresses and similar
     if needs_size_match and 'NOMBRE COMPLETO' in df.columns:
         mask &= df['NOMBRE COMPLETO'].apply(
             lambda n: extract_size(str(n)) == orig_size
+        )
+
+    # Color filter: if original has a defined color, substitute must match
+    if orig_color and 'NOMBRE COMPLETO' in df.columns:
+        mask &= df['NOMBRE COMPLETO'].apply(
+            lambda n: extract_color(str(n)) == orig_color or extract_color(str(n)) is None
         )
 
     # Exclude original SKU
@@ -899,41 +925,31 @@ with tab_res:
 
                         radio_key = f"radio_{expedi}_{idx}"
 
+                        def _on_radio_change(ek=expedi, rk=radio_key, opts=options,
+                                             c_sust=con_sust, r_orig=ref_orig, sdf=subs_df):
+                            chosen_lbl = st.session_state.get(rk, opts[0])
+                            ni = opts.index(chosen_lbl) if chosen_lbl in opts else 0
+                            st.session_state['selections'][ek] = ni
+                            # Propagate to same SKU
+                            chosen_ref = sdf.iloc[ni].get('REFERENCIA','')
+                            for r2 in c_sust:
+                                o_expedi = r2['row']['EXPEDICION']
+                                if (r2['row'].get('SKU') or r2['row'].get('REF','')) == r_orig and o_expedi != ek:
+                                    o_subs = r2['subs'].reset_index(drop=True)
+                                    m = o_subs[o_subs['REFERENCIA'].astype(str) == str(chosen_ref)].index
+                                    st.session_state['selections'][o_expedi] = int(m[0]) if len(m) > 0 else min(ni, len(o_subs)-1)
+
                         st.radio(
                             "Selecciona sustituto:",
                             options,
                             index=sel_idx,
                             key=radio_key,
                             label_visibility="collapsed",
+                            on_change=_on_radio_change,
                         )
 
-                        # Read the chosen index from the radio's session_state value
-                        chosen_label = st.session_state.get(radio_key, options[sel_idx])
-                        new_idx = options.index(chosen_label) if chosen_label in options else sel_idx
-
-                        if new_idx != sel_idx:
-                            # Apply to this expedicion
-                            st.session_state['selections'][expedi] = new_idx
-                            # Apply same choice to ALL other expediciones with the same SKU
-                            same_sku_expeds = [
-                                r2['row']['EXPEDICION']
-                                for r2 in con_sust
-                                if (r2['row'].get('SKU') or r2['row'].get('REF','')) == ref_orig
-                                and r2['row']['EXPEDICION'] != expedi
-                            ]
-                            if same_sku_expeds:
-                                chosen_ref = subs_df.iloc[new_idx].get('REFERENCIA','')
-                                for other_expedi in same_sku_expeds:
-                                    other_r = next((x for x in con_sust if x['row']['EXPEDICION'] == other_expedi), None)
-                                    if other_r is not None:
-                                        other_subs = other_r['subs'].reset_index(drop=True)
-                                        match_idx = other_subs[other_subs['REFERENCIA'].astype(str) == str(chosen_ref)].index
-                                        if len(match_idx) > 0:
-                                            st.session_state['selections'][other_expedi] = int(match_idx[0])
-                                        else:
-                                            st.session_state['selections'][other_expedi] = min(new_idx, len(other_subs)-1)
-                                st.toast(f"✅ Sustituto aplicado a {len(same_sku_expeds)+1} pedido(s) con SKU {ref_orig}", icon="🔄")
-                            st.rerun()
+                        new_idx = st.session_state['selections'].get(expedi, sel_idx)
+                        new_idx = min(new_idx, len(subs_df)-1)
 
                         # Show selected details
                         selected_row = subs_df.iloc[new_idx]
@@ -1031,6 +1047,7 @@ with tab_res:
                     rows_html += (
                         f'<tr style="background:{bg}">'
                         f'<td style="padding:6px 10px;border-bottom:1px solid #e8e8e4;font-weight:600">{row["Expedición"]}</td>'
+                        f'<td style="padding:6px 10px;border-bottom:1px solid #e8e8e4">{row.get("Nº Pedido Cliente","")}</td>'
                         f'<td style="padding:6px 10px;border-bottom:1px solid #e8e8e4">{row["Canal"]}</td>'
                         f'<td style="padding:6px 10px;border-bottom:1px solid #e8e8e4"><code>{row["SKU"]}</code></td>'
                         f'<td style="padding:6px 10px;border-bottom:1px solid #e8e8e4">{row["Producto"][:40]}</td>'
@@ -1043,10 +1060,12 @@ with tab_res:
                     f'<table style="width:100%;border-collapse:collapse;font-size:13px;margin-bottom:12px">'
                     f'<thead><tr style="background:#141413;color:#fff">'
                     f'<th style="padding:7px 10px;text-align:left">Expedición</th>'
+                    f'<th style="padding:7px 10px;text-align:left">Nº Pedido</th>'
                     f'<th style="padding:7px 10px;text-align:left">Canal</th>'
                     f'<th style="padding:7px 10px;text-align:left">SKU</th>'
                     f'<th style="padding:7px 10px;text-align:left">Producto</th>'
                     f'<th style="padding:7px 10px;text-align:left">País</th>'
+                    f'<th style="padding:7px 10px;text-align:left">Motivo</th>'
                     f'<th style="padding:7px 10px;text-align:left">Motivo</th>'
                     f'<th style="padding:7px 10px;text-align:left">Estado</th>'
                     f'</tr></thead><tbody>{rows_html}</tbody></table>',
