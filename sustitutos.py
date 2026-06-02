@@ -890,25 +890,31 @@ with tab_res:
                         subs_df = r['subs'].reset_index(drop=True)
                         options = []
                         for _, sub in subs_df.iterrows():
-                            pvp_s = float(sub.get('PVP',0) or 0)
-                            dp    = float(sub.get('ΔPVP',0) or 0)
+                            pvp_s  = float(sub.get('PVP',0) or 0)
+                            dp     = float(sub.get('ΔPVP',0) or 0)
                             sign_s = f'+{dp:.2f}€' if dp>0 else (f'{dp:.2f}€' if dp<0 else '±0')
                             options.append(
                                 f"{sub.get('REFERENCIA','')} · {str(sub.get('NOMBRE COMPLETO',''))[:40]} · {pvp_s:.2f}€ ({sign_s}) · Stock: {int(sub.get('STOCK',0))}"
                             )
 
-                        chosen = st.radio(
+                        radio_key = f"radio_{expedi}_{idx}"
+
+                        st.radio(
                             "Selecciona sustituto:",
                             options,
                             index=sel_idx,
-                            key=f"radio_{expedi}_{idx}",
+                            key=radio_key,
                             label_visibility="collapsed",
                         )
-                        new_idx = options.index(chosen)
+
+                        # Read the chosen index from the radio's session_state value
+                        chosen_label = st.session_state.get(radio_key, options[sel_idx])
+                        new_idx = options.index(chosen_label) if chosen_label in options else sel_idx
+
                         if new_idx != sel_idx:
                             # Apply to this expedicion
                             st.session_state['selections'][expedi] = new_idx
-                            # Apply same choice to ALL other expediciones with the same SKU original
+                            # Apply same choice to ALL other expediciones with the same SKU
                             same_sku_expeds = [
                                 r2['row']['EXPEDICION']
                                 for r2 in con_sust
@@ -916,21 +922,17 @@ with tab_res:
                                 and r2['row']['EXPEDICION'] != expedi
                             ]
                             if same_sku_expeds:
-                                # Find the same substitute by REFERENCIA in other pedidos' subs lists
                                 chosen_ref = subs_df.iloc[new_idx].get('REFERENCIA','')
                                 for other_expedi in same_sku_expeds:
                                     other_r = next((x for x in con_sust if x['row']['EXPEDICION'] == other_expedi), None)
                                     if other_r is not None:
                                         other_subs = other_r['subs'].reset_index(drop=True)
-                                        # Find same referencia in other subs list
                                         match_idx = other_subs[other_subs['REFERENCIA'].astype(str) == str(chosen_ref)].index
                                         if len(match_idx) > 0:
                                             st.session_state['selections'][other_expedi] = int(match_idx[0])
                                         else:
-                                            # Fallback: use same index if available
                                             st.session_state['selections'][other_expedi] = min(new_idx, len(other_subs)-1)
-                                applied = len(same_sku_expeds)
-                                st.toast(f"✅ Sustituto aplicado a {applied + 1} pedido(s) con SKU {ref_orig}", icon="🔄")
+                                st.toast(f"✅ Sustituto aplicado a {len(same_sku_expeds)+1} pedido(s) con SKU {ref_orig}", icon="🔄")
                             st.rerun()
 
                         # Show selected details
