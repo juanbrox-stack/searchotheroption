@@ -275,6 +275,9 @@ def parse_sinstocks(path):
     # Build header map: normalized_name → col_index
     hdr = {strip_acc(str(v or '')): i for i, v in enumerate(rows[0]) if v}
 
+    # Safe defaults in case header detection fails
+    c_num_ped  = hdr.get('NUMERO DE PEDIDO DE CLIENTE', 6)
+
     def gc(fragments, default):
         """Get column index by fragment match."""
         for frag in fragments:
