@@ -380,6 +380,13 @@ def get_stock_for_ref(sku, country, is_amazon, stocks):
             return int(df[mask].iloc[0]['STOCK'] or 0)
     return 0
 
+def extract_size(text: str) -> str | None:
+    """Extract dimensions like 140x190, 80x200 from product name."""
+    m = re.search(r'\b(\d{2,3})[xX×](\d{2,3})\b', str(text))
+    if m:
+        return f"{m.group(1)}x{m.group(2)}"
+    return None
+
 def extract_color(text: str) -> str | None:
     """Extract color from product name. Returns normalized color or None."""
     text = str(text).lower()
