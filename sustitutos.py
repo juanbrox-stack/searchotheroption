@@ -1,3 +1,47 @@
+
+# ── Memoria histórica semilla (extraída de regeneraciones históricas) ─────────
+MEMORIA_SEED = {
+    "128":{"sku_sust":"126","nombre_orig":"","nombre_sust":"","count":4,"total":4},
+    "2469":{"sku_sust":"A01_EU01_116100","nombre_orig":"","nombre_sust":"","count":1,"total":1},
+    "2673":{"sku_sust":"1939","nombre_orig":"","nombre_sust":"","count":1,"total":1},
+    "4212":{"sku_sust":"4213","nombre_orig":"","nombre_sust":"","count":6,"total":6},
+    "4984":{"sku_sust":"A01_EU01_100501","nombre_orig":"","nombre_sust":"","count":7,"total":11},
+    "4986":{"sku_sust":"A01_EU01_101137","nombre_orig":"","nombre_sust":"","count":2,"total":2},
+    "5293":{"sku_sust":"5294","nombre_orig":"","nombre_sust":"","count":2,"total":2},
+    "5294":{"sku_sust":"8204","nombre_orig":"","nombre_sust":"","count":4,"total":8},
+    "5900":{"sku_sust":"A90_EU01_008297","nombre_orig":"","nombre_sust":"","count":3,"total":3},
+    "5903":{"sku_sust":"5905","nombre_orig":"","nombre_sust":"","count":5,"total":8},
+    "5913":{"sku_sust":"8196","nombre_orig":"","nombre_sust":"","count":1,"total":1},
+    "5920":{"sku_sust":"5923","nombre_orig":"","nombre_sust":"","count":3,"total":4},
+    "5933":{"sku_sust":"5934","nombre_orig":"","nombre_sust":"","count":2,"total":2},
+    "7454":{"sku_sust":"A01_EU01_102713","nombre_orig":"","nombre_sust":"","count":2,"total":2},
+    "7464":{"sku_sust":"8802","nombre_orig":"","nombre_sust":"","count":2,"total":2},
+    "7852":{"sku_sust":"7853","nombre_orig":"","nombre_sust":"","count":1,"total":1},
+    "8163":{"sku_sust":"8162","nombre_orig":"","nombre_sust":"","count":8,"total":8},
+    "8164":{"sku_sust":"8171","nombre_orig":"","nombre_sust":"","count":3,"total":5},
+    "8168":{"sku_sust":"A90_EU01_008176","nombre_orig":"","nombre_sust":"","count":1,"total":1},
+    "8213":{"sku_sust":"5905","nombre_orig":"","nombre_sust":"","count":2,"total":2},
+    "8225":{"sku_sust":"A90_EU01_008225","nombre_orig":"","nombre_sust":"","count":2,"total":2},
+    "8299":{"sku_sust":"5905","nombre_orig":"","nombre_sust":"","count":74,"total":117},
+    "8303":{"sku_sust":"8304","nombre_orig":"","nombre_sust":"","count":7,"total":7},
+    "8373":{"sku_sust":"A90_EU01_008373","nombre_orig":"","nombre_sust":"","count":1,"total":1},
+    "8425":{"sku_sust":"A01_EU01_122354","nombre_orig":"","nombre_sust":"","count":20,"total":29},
+    "8469":{"sku_sust":"A01_EU01_122274","nombre_orig":"","nombre_sust":"","count":2,"total":3},
+    "8699":{"sku_sust":"7938","nombre_orig":"","nombre_sust":"","count":1,"total":1},
+    "A01_EU01_002772":{"sku_sust":"2772","nombre_orig":"","nombre_sust":"","count":1,"total":1},
+    "A01_EU01_100501":{"sku_sust":"A01_EU01_101137","nombre_orig":"","nombre_sust":"","count":1,"total":1},
+    "A01_EU01_112281":{"sku_sust":"A01_EU01_119668","nombre_orig":"","nombre_sust":"","count":3,"total":5},
+    "A01_EU01_112483":{"sku_sust":"A01_EU01_122355","nombre_orig":"","nombre_sust":"","count":1,"total":1},
+    "A01_EU01_113980":{"sku_sust":"A90_EU01_120288","nombre_orig":"","nombre_sust":"","count":1,"total":1},
+    "A01_EU01_114480":{"sku_sust":"A01_EU01_119670","nombre_orig":"","nombre_sust":"","count":2,"total":2},
+    "A01_EU01_117911":{"sku_sust":"A01_EU01_110329","nombre_orig":"","nombre_sust":"","count":1,"total":1},
+    "A01_EU01_123442":{"sku_sust":"8221","nombre_orig":"","nombre_sust":"","count":8,"total":8},
+    "A01_EU01_123445":{"sku_sust":"A01_EU01_125321","nombre_orig":"","nombre_sust":"","count":3,"total":6},
+    "A01_EU01_123782":{"sku_sust":"1851","nombre_orig":"","nombre_sust":"","count":3,"total":3},
+    "A01_EU01_124548":{"sku_sust":"8366","nombre_orig":"","nombre_sust":"","count":4,"total":5},
+    "A70_EU01_119667":{"sku_sust":"A01_EU01_122029","nombre_orig":"","nombre_sust":"","count":1,"total":1},
+}
+
 """
 Gestor de Sustitutos Cecotec
 - Sinstocks col K (índice 10) = SKU/Referencia Cecotec
@@ -596,7 +640,37 @@ for col, lbl, pth in zip(cs,
 data_ok = all([path_nac, path_inter, path_stock, path_sins])
 
 # ── TABS ───────────────────────────────────────────────────────────────────────
-tab_proc, tab_manual, tab_res = st.tabs(['⚙️ Procesar', '🔍 Buscar SKU', '📊 Resultados'])
+tab_proc, tab_manual, tab_res, tab_memoria = st.tabs(['⚙️ Procesar', '🔍 Buscar SKU', '📊 Resultados', '🧠 Memoria'])
+
+# ── Memoria histórica ─────────────────────────────────────────────────────────
+# Stored as: { sku_orig: { "sku_sust": "...", "nombre_orig": "...", "nombre_sust": "...", "count": N } }
+if 'memoria' not in st.session_state:
+    # Pre-load with historical data
+    st.session_state['memoria'] = {k: dict(v) for k, v in MEMORIA_SEED.items()}
+
+def memoria_add(sku_orig, nombre_orig, sku_sust, nombre_sust):
+    mem = st.session_state['memoria']
+    if sku_orig in mem:
+        mem[sku_orig]['count'] += 1
+        mem[sku_orig]['sku_sust']   = sku_sust
+        mem[sku_orig]['nombre_sust'] = nombre_sust
+    else:
+        mem[sku_orig] = {
+            'sku_sust':    sku_sust,
+            'nombre_orig': nombre_orig,
+            'nombre_sust': nombre_sust,
+            'count':       1,
+        }
+
+def memoria_get(sku_orig):
+    return st.session_state['memoria'].get(str(sku_orig))
+
+def memoria_delete(sku_orig):
+    st.session_state['memoria'].pop(str(sku_orig), None)
+
+# ── Removed substitutes (moved to cancel) ────────────────────────────────────
+if 'removed_sust' not in st.session_state:
+    st.session_state['removed_sust'] = set()  # set of EXPEDICION strings
 
 with tab_proc:
     if not data_ok:
@@ -783,8 +857,27 @@ with tab_res:
         del st.session_state['results']
         st.warning('Resultados anteriores incompatibles. Vuelve a procesar.')
         st.stop()
-    con_sust = [r for r in results if not r['subs'].empty]
-    sin_sust = [r for r in results if r['subs'].empty]
+
+    removed = st.session_state.get('removed_sust', set())
+    mem     = st.session_state.get('memoria', {})
+
+    # Auto-apply memory suggestions for unseen expediciones
+    if 'selections' not in st.session_state:
+        st.session_state['selections'] = {}
+    for r in results:
+        if r['subs'].empty: continue
+        sku    = r['row'].get('SKU') or r['row'].get('REF','')
+        expedi = r['row']['EXPEDICION']
+        if expedi in st.session_state['selections']: continue  # already chosen
+        mem_entry = mem.get(str(sku))
+        if mem_entry:
+            sdf = r['subs'].reset_index(drop=True)
+            match = sdf[sdf['REFERENCIA'].astype(str) == str(mem_entry['sku_sust'])].index
+            if len(match) > 0:
+                st.session_state['selections'][expedi] = int(match[0])
+
+    con_sust = [r for r in results if not r['subs'].empty and r['row']['EXPEDICION'] not in removed]
+    sin_sust = [r for r in results if r['subs'].empty  or  r['row']['EXPEDICION'] in removed]
     total    = len(results)
 
     st.markdown(f"""<div class="kpi-row">
@@ -965,6 +1058,34 @@ with tab_res:
                         if url_sel:
                             st.markdown(f"[🔗 Ver en cecotec.es]({url_sel})")
 
+                        st.divider()
+                        btn1, btn2, btn3 = st.columns(3)
+
+                        # ── Guardar en memoria ────────────────────────────────
+                        in_mem = str(ref_orig) in st.session_state.get('memoria', {})
+                        with btn1:
+                            mem_label = "🧠 Actualizar memoria" if in_mem else "🧠 Guardar en memoria"
+                            if st.button(mem_label, key=f"mem_{expedi}_{idx}", use_container_width=True):
+                                memoria_add(
+                                    str(ref_orig), r['nombre_orig'],
+                                    str(selected_row.get('REFERENCIA','')),
+                                    str(selected_row.get('NOMBRE COMPLETO',''))
+                                )
+                                st.toast(f"🧠 Guardado: SKU {ref_orig} → {selected_row.get('REFERENCIA','')}", icon="🧠")
+                                st.rerun()
+
+                        # ── Quitar sustituto (mover a cancelar) ───────────────
+                        with btn2:
+                            if st.button("❌ Quitar sustituto", key=f"rm_{expedi}_{idx}",
+                                         use_container_width=True, type="secondary"):
+                                st.session_state['removed_sust'].add(expedi)
+                                st.toast(f"❌ {expedi} movido a cancelaciones", icon="❌")
+                                st.rerun()
+
+                        # ── Restaurar desde cancelados ────────────────────────
+                        with btn3:
+                            st.caption(f"{'🟢 En memoria' if in_mem else '⚪ Sin memoria'}")
+
     with t2:
         if not sin_sust:
             st.success('✅ Todos los pedidos tienen sustituto disponible.')
@@ -973,22 +1094,43 @@ with tab_res:
             for r in sin_sust:
                 row = r['row']
                 sku = row.get('SKU') or row.get('REF') or ''
-                motivo = ('SKU no encontrado en tarifa' if r['tar_row'] is None
+                expedi_c = row.get('EXPEDICION','')
+                is_removed = expedi_c in removed
+                motivo = ('Sustituto eliminado manualmente' if is_removed
+                          else 'SKU no encontrado en tarifa' if r['tar_row'] is None
                           else f"Sin sustituto con stock en subfamilia '{r['subfamilia']}'")
                 cancel_rows.append({
-                    'Expedición':   row.get('EXPEDICION',''),
+                    'Expedición':        expedi_c,
                     'Nº Pedido Cliente': row.get('NUM_PEDIDO_CLIENTE',''),
-                    'País':         row.get('PAIS',''),
-                    'Canal':        str(row.get('MARKETPLACE',''))[:35],
-                    'Amazon':       '✅' if row.get('IS_AMAZON') else '—',
-                    'SKU':          sku,
-                    'Producto':     r['nombre_orig'][:60],
-                    'PVP (€)':      round(r['pvp_orig'],2),
-                    'Subfamilia':   r['subfamilia'],
-                    'Motivo':       motivo,
+                    'País':              row.get('PAIS',''),
+                    'Canal':             str(row.get('MARKETPLACE',''))[:35],
+                    'Amazon':            '✅' if row.get('IS_AMAZON') else '—',
+                    'SKU':               sku,
+                    'Producto':          r['nombre_orig'][:60],
+                    'PVP (€)':           round(r['pvp_orig'],2),
+                    'Subfamilia':        r['subfamilia'],
+                    'Motivo':            motivo,
+                    '_removed':          is_removed,
                 })
-            df_c = pd.DataFrame(cancel_rows)
-            st.warning(f"⚠️ **{len(df_c)} pedidos** sin sustituto — deben cancelarse.")
+            df_c_full = pd.DataFrame(cancel_rows)
+            df_c = df_c_full.drop(columns=['_removed'])
+            n_removed = df_c_full['_removed'].sum()
+
+            st.warning(f"⚠️ **{len(df_c)} pedidos** sin sustituto — deben cancelarse."
+                       + (f" ({n_removed} quitados manualmente)" if n_removed else ""))
+
+            # Restore button for manually removed ones
+            if n_removed:
+                removed_expedis = df_c_full[df_c_full['_removed']]['Expedición'].tolist()
+                restore_opts = st.multiselect(
+                    "Restaurar sustituto para:", removed_expedis, key="restore_sel",
+                    placeholder="Selecciona expediciones para devolverlas a sustitutos..."
+                )
+                if restore_opts and st.button("↩ Restaurar seleccionados", key="btn_restore"):
+                    for e in restore_opts:
+                        st.session_state['removed_sust'].discard(e)
+                    st.toast(f"✅ {len(restore_opts)} pedido(s) restaurados", icon="↩")
+                    st.rerun()
             st.dataframe(df_c, use_container_width=True, hide_index=True,
                 column_config={'PVP (€)': st.column_config.NumberColumn(format='%.2f €')})
 
@@ -1111,3 +1253,121 @@ with tab_res:
                     if st.button("↩ Limpiar enviados", key="cancel_clear_sent"):
                         st.session_state['_cancel_sent'] = set()
                         st.rerun()
+
+with tab_memoria:
+    st.markdown('<div class="sec">🧠 Memoria de sustitutos históricos</div>', unsafe_allow_html=True)
+    st.caption("Sustitutos recurrentes extraídos del histórico de regeneraciones + añadidos manualmente. "
+               "Se aplican automáticamente al procesar nuevos sinstocks.")
+
+    mem = st.session_state.get('memoria', {})
+
+    # ── Import from regeneracion files ───────────────────────────────────────
+    with st.expander("📥 Importar desde fichero de regeneración histórico"):
+        fu_regen = st.file_uploader("Sube regeneracion_pedidos.xlsx", type=['xlsx'], key='u_regen')
+        if fu_regen and st.button("Importar", key="btn_import_regen", type="primary"):
+            df_regen = pd.read_excel(fu_regen, dtype=str).dropna(subset=['ARTICLE','NEW_ARTICLE'])
+            imported = 0
+            for _, row in df_regen.iterrows():
+                art = norm_ref(str(row['ARTICLE']).strip())
+                new = norm_ref(str(row['NEW_ARTICLE']).strip())
+                if art and new and art != new:
+                    if art in mem:
+                        mem[art]['count'] += 1
+                        mem[art]['total'] += 1
+                    else:
+                        mem[art] = {'sku_sust': new, 'nombre_orig':'', 'nombre_sust':'', 'count':1, 'total':1}
+                    imported += 1
+            st.session_state['memoria'] = mem
+            st.success(f"✅ {imported} registros importados / actualizados")
+            st.rerun()
+
+    # ── Enrich names from feed if loaded ─────────────────────────────────────
+    feed_map_m = load_feed(path_feed) if path_feed else {}
+    if feed_map_m:
+        feed_titles = {}
+        try:
+            df_feed_raw = pd.read_excel(path_feed, usecols=['mpn','title'], dtype=str).dropna()
+            df_feed_raw['REF'] = df_feed_raw['mpn'].apply(norm_ref)
+            feed_titles = df_feed_raw.set_index('REF')['title'].to_dict()
+        except Exception:
+            pass
+        for sku, entry in mem.items():
+            if not entry.get('nombre_orig'):
+                entry['nombre_orig'] = feed_titles.get(str(sku), '')
+            if not entry.get('nombre_sust'):
+                entry['nombre_sust'] = feed_titles.get(str(entry.get('sku_sust','')), '')
+
+    # ── Tabla de memoria ──────────────────────────────────────────────────────
+    if not mem:
+        st.info("La memoria está vacía. Se rellenará automáticamente al guardar sustitutos desde la pestaña Resultados.")
+    else:
+        mem_rows = []
+        for sku, entry in sorted(mem.items(), key=lambda x: -x[1].get('count',0)):
+            mem_rows.append({
+                'SKU original':  sku,
+                'Nombre orig.':  entry.get('nombre_orig','')[:45],
+                '→ Sustituto':   entry.get('sku_sust',''),
+                'Nombre sust.':  entry.get('nombre_sust','')[:45],
+                'Usos':          entry.get('count',0),
+                'Conf. %':       round(entry.get('count',0) / max(entry.get('total',1),1) * 100),
+            })
+        df_mem = pd.DataFrame(mem_rows)
+
+        # Filter
+        search_mem = st.text_input("Buscar SKU o nombre", placeholder="ej: 8299", key="mem_search")
+        if search_mem:
+            mask = (df_mem['SKU original'].str.contains(search_mem, case=False, na=False) |
+                    df_mem['→ Sustituto'].str.contains(search_mem, case=False, na=False) |
+                    df_mem['Nombre orig.'].str.contains(search_mem, case=False, na=False))
+            df_mem = df_mem[mask]
+
+        st.dataframe(df_mem, use_container_width=True, hide_index=True,
+            column_config={
+                'Usos':    st.column_config.NumberColumn("Usos", format="%d"),
+                'Conf. %': st.column_config.ProgressColumn("Confianza", min_value=0, max_value=100, format="%d%%"),
+            })
+
+        st.caption(f"**{len(mem)} entradas** en memoria · Confianza = usos con este sustituto / total usos del SKU")
+
+        # ── Manual add ───────────────────────────────────────────────────────
+        st.markdown('<div class="sec">➕ Añadir / modificar entrada</div>', unsafe_allow_html=True)
+        ma1, ma2 = st.columns(2)
+        with ma1: new_sku_orig = st.text_input("SKU original", key="m_add_orig")
+        with ma2: new_sku_sust = st.text_input("SKU sustituto", key="m_add_sust")
+        if st.button("Añadir / actualizar", key="btn_mem_add", type="primary"):
+            if new_sku_orig and new_sku_sust:
+                k = norm_ref(new_sku_orig)
+                v = norm_ref(new_sku_sust)
+                if k in mem:
+                    mem[k]['sku_sust'] = v
+                    mem[k]['count'] += 1
+                else:
+                    mem[k] = {'sku_sust':v,'nombre_orig':'','nombre_sust':'','count':1,'total':1}
+                st.session_state['memoria'] = mem
+                st.success(f"✅ {k} → {v} guardado")
+                st.rerun()
+
+        # ── Delete entry ──────────────────────────────────────────────────────
+        st.markdown('<div class="sec">🗑️ Eliminar entrada</div>', unsafe_allow_html=True)
+        del_sku = st.selectbox("SKU a eliminar", ['—'] + list(mem.keys()), key="mem_del")
+        if del_sku != '—' and st.button("🗑️ Eliminar", key="btn_mem_del", type="secondary"):
+            memoria_delete(del_sku)
+            st.success(f"Eliminado: {del_sku}")
+            st.rerun()
+
+        # ── Reset to seed ─────────────────────────────────────────────────────
+        st.divider()
+        if st.button("↺ Resetear a datos históricos originales", key="btn_mem_reset"):
+            st.session_state['memoria'] = {k: dict(v) for k, v in MEMORIA_SEED.items()}
+            st.success("Memoria reseteada a los 39 pares históricos")
+            st.rerun()
+
+        # ── Export ────────────────────────────────────────────────────────────
+        df_exp = pd.DataFrame([
+            {'SKU original': k, 'SKU sustituto': v['sku_sust'],
+             'Nombre orig.': v.get('nombre_orig',''), 'Nombre sust.': v.get('nombre_sust',''),
+             'Usos': v.get('count',0)}
+            for k, v in mem.items()
+        ])
+        st.download_button("⬇️ Exportar memoria CSV",
+            df_exp.to_csv(index=False).encode(), "memoria_sustitutos.csv", "text/csv")
