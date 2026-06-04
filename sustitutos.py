@@ -2,6 +2,7 @@
 # ── Memoria histórica semilla (extraída de regeneraciones históricas) ─────────
 MEMORIA_SEED = {
     "128":{"sku_sust":"126","nombre_orig":"","nombre_sust":"","count":4,"total":4},
+    "1375":{"sku_sust":"1387","nombre_orig":"","nombre_sust":"","count":1,"total":1},
     "2469":{"sku_sust":"A01_EU01_116100","nombre_orig":"","nombre_sust":"","count":1,"total":1},
     "2673":{"sku_sust":"1939","nombre_orig":"","nombre_sust":"","count":1,"total":1},
     "4212":{"sku_sust":"4213","nombre_orig":"","nombre_sust":"","count":6,"total":6},
@@ -113,6 +114,15 @@ def norm_ref(v) -> str:
         return s  # A01_EU01_106744 — keep as-is
     if re.match(r'^\d+\.?\d*$', s):
         return str(int(float(s)))  # strip leading zeros
+    return s
+
+def format_sku_output(v) -> str:
+    """Format SKU for output Excel: numeric → 5-digit zero-padded, A-prefix → as-is."""
+    s = str(v).strip()
+    if re.match(r'^A\d{2}_\w+_\d+$', s):
+        return s          # A01_EU01_122354 — unchanged
+    if re.match(r'^\d+$', s):
+        return s.zfill(5) # 8425 → 08425, 1375 → 01375
     return s
 
 # ── Data loaders ───────────────────────────────────────────────────────────────
@@ -567,7 +577,12 @@ def build_regen_excel(output_rows):
     ws.row_dimensions[1].height = 22
     for ri, row in enumerate(output_rows, 2):
         fill = PatternFill('solid', start_color='FFF5F5F3' if ri%2==0 else 'FFFFFFFF')
-        for ci, val in enumerate([row['NUMBER'], row['ARTICLE'], row['NEW_ARTICLE']], 1):
+        vals = [
+            row['NUMBER'],
+            format_sku_output(row['ARTICLE']),
+            format_sku_output(row['NEW_ARTICLE']),
+        ]
+        for ci, val in enumerate(vals, 1):
             c = ws.cell(row=ri, column=ci, value=val)
             c.font = Font(name='Arial', size=10); c.fill = fill
             c.border = brd; c.alignment = Alignment(vertical='center')
