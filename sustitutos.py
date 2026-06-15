@@ -140,14 +140,14 @@ COL_CANDIDATES = {
 
 def auto_detect_col(df_cols, field):
     """Return best matching column name for a logical field, or None."""
-    cols_upper = {c.upper().strip(): c for c in df_cols}
+    cols_upper = {str(c).upper().strip(): c for c in df_cols}
     for candidate in COL_CANDIDATES.get(field, []):
         if candidate.upper() in cols_upper:
             return cols_upper[candidate.upper()]
     # Partial match fallback
     for candidate in COL_CANDIDATES.get(field, []):
         for col in df_cols:
-            if candidate.upper() in col.upper():
+            if candidate.upper() in str(col).upper():
                 return col
     return None
 
@@ -159,6 +159,8 @@ def apply_col_mapping(df, mapping):
             rename[actual] = logical
     if rename:
         df = df.rename(columns=rename)
+    # Ensure all column names are strings
+    df.columns = [str(c) for c in df.columns]
     return df
 
 def detect_sheet_mapping(xl_path):
@@ -204,8 +206,7 @@ def load_tarifa_nac(path, sheet=None, col_map=None):
         target = candidates[0] if candidates else xl.sheet_names[0]
 
     df = pd.read_excel(path, sheet_name=target)
-
-    # Apply user mapping if provided
+    df.columns = [str(c) for c in df.columns]  # ensure string cols
     if col_map:
         df = apply_col_mapping(df, col_map)
 
@@ -238,6 +239,7 @@ def load_tarifa_inter(path, sheet_country_map=None, col_map=None):
         if sh not in xl.sheet_names:
             continue
         df = pd.read_excel(path, sheet_name=sh)
+        df.columns = [str(c) for c in df.columns]  # ensure string cols
         if col_map:
             df = apply_col_mapping(df, col_map)
         # Auto-detect columns
