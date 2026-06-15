@@ -125,45 +125,158 @@ def format_sku_output(v) -> str:
         return s.zfill(5) # 8425 → 08425, 1375 → 01375
     return s
 
-# ── Data loaders ───────────────────────────────────────────────────────────────
+# ── Column auto-detection helpers ─────────────────────────────────────────────
+# Candidate column names for each logical field (priority order)
+COL_CANDIDATES = {
+    'REF':         ['REFERENCIA', 'REF', 'SKU', 'CODIGO', 'CÓDIGO'],
+    'PVP':         ['PVP PUB.', 'PVP PUB', 'PVPR', 'PVP PUBLICADO', 'PVP', 'PRECIO'],
+    'NETO':        ['NETO', 'NETO (SIN PORTE)', 'PRECIO NETO', 'NETO ES-FR', 'NETO ES-IT',
+                    'NETO ES-DE', 'NETO PT', 'NETO PL', 'NETO NL', 'NETO BE'],
+    'SUBFAMILIA':  ['SUBFAMILIA', 'SUB FAMILIA', 'SUBCATEGORIA', 'SUBCATEGORÍA'],
+    'FAMILIA':     ['FAMILIA', 'FAMILIA PADRE', 'CATEGORIA', 'CATEGORÍA'],
+    'NOMBRE':      ['NOMBRE COMPLETO', 'TITULO', 'TÍTULO', 'NOMBRE', 'TITLE'],
+    'DESP':        ['DESPOSICIONADO', 'DESCATALOGADO', 'BAJA'],
+}
+
+def auto_detect_col(df_cols, field):
+    """Return best matching column name for a logical field, or None."""
+    cols_upper = {c.upper().strip(): c for c in df_cols}
+    for candidate in COL_CANDIDATES.get(field, []):
+        if candidate.upper() in cols_upper:
+            return cols_upper[candidate.upper()]
+    # Partial match fallback
+    for candidate in COL_CANDIDATES.get(field, []):
+        for col in df_cols:
+            if candidate.upper() in col.upper():
+                return col
+    return None
+
+def apply_col_mapping(df, mapping):
+    """Rename columns according to user mapping dict {logical: actual_col}."""
+    rename = {}
+    for logical, actual in mapping.items():
+        if actual and actual in df.columns and logical not in df.columns:
+            rename[actual] = logical
+    if rename:
+        df = df.rename(columns=rename)
+    return df
+
+def detect_sheet_mapping(xl_path):
+    """Detect which sheets exist and guess their country/marketplace."""
+    xl = pd.ExcelFile(xl_path)
+    sheets = xl.sheet_names
+    # Known patterns
+    COUNTRY_HINTS = {
+        'ES-FR': 'FR', 'FR-FR': 'FR', 'FRANCIA': 'FR',
+        'ES-IT': 'IT', 'IT-IT': 'IT', 'ITALIA': 'IT',
+        'ES-DE': 'DE', 'DE-DE': 'DE', 'ALEMANIA': 'DE',
+        'PT': 'PT', 'PORTUGAL': 'PT',
+        'PL': 'PL', 'POLONIA': 'PL',
+        'NL': 'NL', 'HOLANDA': 'NL',
+        'BE': 'BE', 'BÉLGICA': 'BE', 'BELGICA': 'BE',
+        'SE': 'SE', 'SUECIA': 'SE',
+        'AMAZON': 'AMAZON', 'T_AMZ': 'AMAZON',
+        'MIRAVIA': 'MIRAVIA', 'T_MIR': 'MIRAVIA',
+        'MEDIAMARKT': 'MEDIAMARKT', 'CARREFOUR': 'CARREFOUR',
+        'PRIVALIA': 'PRIVALIA',
+    }
+    result = {}
+    for sh in sheets:
+        key = sh.upper().strip()
+        for hint, val in COUNTRY_HINTS.items():
+            if hint in key:
+                result[sh] = val
+                break
+        else:
+            if not sh.startswith('(') and 'COM' not in sh.upper():
+                result[sh] = sh  # Use sheet name as-is
+    return result
+
+# ── Data loaders (flexible) ────────────────────────────────────────────────────
 @st.cache_data
-def load_tarifa_nac(path):
-    df = pd.read_excel(path, sheet_name='T_AMZ')
-    df['REF'] = df['REFERENCIA'].apply(norm_ref)
+def load_tarifa_nac(path, sheet=None, col_map=None):
+    xl = pd.ExcelFile(path)
+    # Pick sheet: explicit, or first without (%) or COM
+    if sheet:
+        target = sheet
+    else:
+        candidates = [s for s in xl.sheet_names if not s.startswith('(') and 'COM' not in s.upper()]
+        target = candidates[0] if candidates else xl.sheet_names[0]
+
+    df = pd.read_excel(path, sheet_name=target)
+
+    # Apply user mapping if provided
+    if col_map:
+        df = apply_col_mapping(df, col_map)
+
+    # Auto-detect critical columns
+    for field in ['REF', 'PVP', 'NETO', 'SUBFAMILIA', 'FAMILIA', 'NOMBRE', 'DESP']:
+        if field not in df.columns:
+            detected = auto_detect_col(df.columns, field)
+            if detected:
+                df = df.rename(columns={detected: field})
+
+    # Standardise
+    if 'REF' in df.columns:
+        df['REF'] = df['REF'].apply(norm_ref)
+    if 'PVP' not in df.columns and 'NETO' in df.columns:
+        df['PVP'] = df['NETO']  # fallback
+    # Keep original REFERENCIA for output
+    if 'REFERENCIA' not in df.columns and 'REF' in df.columns:
+        df['REFERENCIA'] = df['REF']
     return df
 
 @st.cache_data
-def load_tarifa_inter(path):
+def load_tarifa_inter(path, sheet_country_map=None, col_map=None):
+    """Load international tarifa. sheet_country_map: {sheet_name: country_code}"""
     xl = pd.ExcelFile(path)
+    detected = detect_sheet_mapping(path)
+    mapping = sheet_country_map or detected
     out = {}
-    for sh in xl.sheet_names:
-        df = pd.read_excel(path, sheet_name=sh)
-        if 'REFERENCIA' not in df.columns:
+
+    for sh, country in mapping.items():
+        if sh not in xl.sheet_names:
             continue
-        df['REF'] = df['REFERENCIA'].apply(norm_ref)
-        out[sh] = df
+        df = pd.read_excel(path, sheet_name=sh)
+        if col_map:
+            df = apply_col_mapping(df, col_map)
+        # Auto-detect columns
+        for field in ['REF', 'PVP', 'NETO', 'SUBFAMILIA', 'FAMILIA', 'NOMBRE', 'DESP']:
+            if field not in df.columns:
+                detected_col = auto_detect_col(df.columns, field)
+                if detected_col:
+                    df = df.rename(columns={detected_col: field})
+        if 'REF' not in df.columns:
+            continue
+        df['REF'] = df['REF'].apply(norm_ref)
+        if 'REFERENCIA' not in df.columns:
+            df['REFERENCIA'] = df['REF']
+        out[country] = df
     return out
 
 @st.cache_data
 def load_stock(path):
-    """Returns dict country → DataFrame.
-    España: col G = Stock Operativo
-    FR/IT/DE/IT: col F = StockDisponible
-    """
     xl = pd.ExcelFile(path)
     SHEET_MAP = {'España':'ES','Alemania':'DE','Francia':'FR','Italia':'IT'}
     out = {}
     for sh in xl.sheet_names:
         country = SHEET_MAP.get(sh, sh)
         df = pd.read_excel(path, sheet_name=sh)
-        df['REF'] = df['Referencia'].apply(norm_ref)
-        # Normalise stock column name
-        if 'Stock Operativo' in df.columns:       # España
+        # Normalise ref
+        ref_col = next((c for c in df.columns if 'referencia' in c.lower() or c.lower() == 'ref'), None)
+        if ref_col:
+            df['REF'] = df[ref_col].apply(norm_ref)
+        else:
+            continue
+        # Normalise stock column
+        if 'Stock Operativo' in df.columns:
             df['STOCK'] = pd.to_numeric(df['Stock Operativo'], errors='coerce').fillna(0)
-        elif 'StockDisponible' in df.columns:      # FR/IT/DE
+        elif 'StockDisponible' in df.columns:
             df['STOCK'] = pd.to_numeric(df['StockDisponible'], errors='coerce').fillna(0)
         else:
-            df['STOCK'] = 0
+            # Try to find any stock column
+            stk_col = next((c for c in df.columns if 'stock' in c.lower()), None)
+            df['STOCK'] = pd.to_numeric(df[stk_col], errors='coerce').fillna(0) if stk_col else 0
         out[country] = df
     return out
 
@@ -406,18 +519,13 @@ def parse_sinstocks(path):
 # ── Tarifa lookup ──────────────────────────────────────────────────────────────
 def get_tarifa(sku, country, is_amazon, tarifa_nac, tarifa_inter):
     """Returns (row, df, pvp_col, neto_col) for a given SKU and context."""
-    if is_amazon and country != 'ES' and country in INTER_SHEET:
-        sh, pvp_col, neto_col = INTER_SHEET[country]
-        df = tarifa_inter.get(sh, tarifa_nac)
-        # Fallback col names
-        if pvp_col not in df.columns:
-            pvp_col = next((c for c in df.columns if 'PVP PUB' in str(c).upper()), pvp_col)
-        if neto_col not in df.columns:
-            neto_col = next((c for c in df.columns if 'NETO' in str(c).upper()), 'NETO')
+    if is_amazon and country != 'ES' and country in tarifa_inter:
+        df = tarifa_inter[country]
     else:
         df = tarifa_nac
-        pvp_col  = 'PVP PUB.'
-        neto_col = 'NETO'
+    # After flexible loading, columns are normalised to 'PVP' and 'NETO'
+    pvp_col  = 'PVP'  if 'PVP'  in df.columns else next((c for c in df.columns if 'PVP' in c.upper()), 'PVP')
+    neto_col = 'NETO' if 'NETO' in df.columns else next((c for c in df.columns if 'NETO' in c.upper()), 'NETO')
 
     mask = df['REF'] == str(sku)
     if not mask.any():
@@ -475,16 +583,13 @@ SIZE_SENSITIVE_FAMILIES = {
 def find_substitutes(tar_row, pvp_col, pvp_orig, sku_orig,
                      country, is_amazon, tarifa_nac, tarifa_inter, stocks, max_extra=10.0):
     """Same SUBFAMILIA, not desposicionado, PVP PUB ≤ original+max_extra, stock > 0."""
-    if is_amazon and country != 'ES' and country in INTER_SHEET:
-        sh, pc, nc = INTER_SHEET[country]
-        df = tarifa_inter.get(sh, tarifa_nac).copy()
-        if pc not in df.columns:
-            pc = next((c for c in df.columns if 'PVP PUB' in str(c).upper()), pc)
+    if is_amazon and country != 'ES' and country in tarifa_inter:
+        df = tarifa_inter[country].copy()
         stock_country = country
     else:
         df = tarifa_nac.copy()
-        pc = 'PVP PUB.'
         stock_country = 'ES'
+    pc = 'PVP' if 'PVP' in df.columns else next((c for c in df.columns if 'PVP' in c.upper() and 'MIN' not in c.upper()), 'PVP')
 
     subfamilia = str(tar_row.get('SUBFAMILIA',''))
     familia    = str(tar_row.get('FAMILIA',''))
@@ -655,7 +760,9 @@ for col, lbl, pth in zip(cs,
 data_ok = all([path_nac, path_inter, path_stock, path_sins])
 
 # ── TABS ───────────────────────────────────────────────────────────────────────
-tab_proc, tab_manual, tab_res, tab_memoria = st.tabs(['⚙️ Procesar', '🔍 Buscar SKU', '📊 Resultados', '🧠 Memoria'])
+tab_proc, tab_manual, tab_res, tab_memoria, tab_mapeo = st.tabs([
+    '⚙️ Procesar', '🔍 Buscar SKU', '📊 Resultados', '🧠 Memoria', '🗂️ Mapeo columnas'
+])
 
 # ── Memoria histórica ─────────────────────────────────────────────────────────
 # Stored as: { sku_orig: { "sku_sust": "...", "nombre_orig": "...", "nombre_sust": "...", "count": N } }
@@ -691,8 +798,12 @@ with tab_proc:
     if not data_ok:
         st.warning('👈 Sube los ficheros en el panel izquierdo para continuar.')
     else:
-        tarifa_nac   = load_tarifa_nac(path_nac)
-        tarifa_inter = load_tarifa_inter(path_inter)
+        _nac_sheet   = st.session_state.get('nac_sheet')
+        _nac_col_map = st.session_state.get('nac_col_map')
+        _inter_smap  = st.session_state.get('inter_sheet_map')
+        _inter_cmap  = st.session_state.get('inter_col_map')
+        tarifa_nac   = load_tarifa_nac(path_nac, sheet=_nac_sheet, col_map=_nac_col_map)
+        tarifa_inter = load_tarifa_inter(path_inter, sheet_country_map=_inter_smap, col_map=_inter_cmap)
         stocks       = load_stock(path_stock)
         listing_map  = load_listing(path_listing) if path_listing else {}
         feed_map     = load_feed(path_feed) if path_feed else {}
@@ -804,8 +915,12 @@ with tab_manual:
             else:
                 sku = norm_ref(manual_sku.strip())
                 # Load data (already cached)
-                tarifa_nac   = load_tarifa_nac(path_nac)
-                tarifa_inter = load_tarifa_inter(path_inter)
+                _nac_sheet   = st.session_state.get('nac_sheet')
+                _nac_col_map = st.session_state.get('nac_col_map')
+                _inter_smap  = st.session_state.get('inter_sheet_map')
+                _inter_cmap  = st.session_state.get('inter_col_map')
+                tarifa_nac   = load_tarifa_nac(path_nac, sheet=_nac_sheet, col_map=_nac_col_map)
+                tarifa_inter = load_tarifa_inter(path_inter, sheet_country_map=_inter_smap, col_map=_inter_cmap)
                 stocks       = load_stock(path_stock)
                 feed_map     = load_feed(path_feed) if path_feed else {}
 
@@ -1386,3 +1501,149 @@ with tab_memoria:
         ])
         st.download_button("⬇️ Exportar memoria CSV",
             df_exp.to_csv(index=False).encode(), "memoria_sustitutos.csv", "text/csv")
+
+# ── TAB MAPEO ─────────────────────────────────────────────────────────────────
+with tab_mapeo:
+    st.markdown('<div class="sec">🗂️ Mapeo de columnas y pestañas de tarifa</div>', unsafe_allow_html=True)
+    st.caption("Si tus ficheros de tarifa tienen nombres de columna diferentes a los estándar, "
+               "configura aquí el mapeo. La app lo aplicará al cargar los datos.")
+
+    FIELDS = {
+        'REF':        ('Referencia / SKU', 'REFERENCIA, REF, SKU, CODIGO'),
+        'PVP':        ('PVP publicado',     'PVP PUB., PVP PUB, PVPR, PVP PUBLICADO'),
+        'NETO':       ('Precio neto',       'NETO, NETO (SIN PORTE), PRECIO NETO'),
+        'SUBFAMILIA': ('Subfamilia',        'SUBFAMILIA, SUB FAMILIA'),
+        'FAMILIA':    ('Familia',           'FAMILIA, FAMILIA PADRE'),
+        'NOMBRE':     ('Nombre completo',   'NOMBRE COMPLETO, TITULO, NOMBRE'),
+        'DESP':       ('Desposicionado',    'DESPOSICIONADO, DESCATALOGADO, BAJA'),
+    }
+
+    # ── Tarifa Nacional ───────────────────────────────────────────────────────
+    st.markdown("### 📄 Tarifa Nacional")
+
+    if path_nac:
+        xl_nac = pd.ExcelFile(path_nac)
+        sheets_nac = [s for s in xl_nac.sheet_names if not s.startswith('(')]
+
+        col_sheet, col_info = st.columns([2, 3])
+        with col_sheet:
+            sel_sheet_nac = st.selectbox(
+                "Pestaña a usar", sheets_nac,
+                index=sheets_nac.index('T_AMZ') if 'T_AMZ' in sheets_nac else 0,
+                key="map_nac_sheet"
+            )
+        with col_info:
+            df_preview = pd.read_excel(path_nac, sheet_name=sel_sheet_nac, nrows=1)
+            available_cols = ['— auto —'] + list(df_preview.columns)
+            st.caption(f"Columnas disponibles en **{sel_sheet_nac}**: "
+                       f"`{'`, `'.join(df_preview.columns[:8])}` …")
+
+        st.markdown("**Mapeo de campos:**")
+        cols_a, cols_b = st.columns(2)
+        nac_map = {}
+        field_items = list(FIELDS.items())
+        for i, (field, (label, hint)) in enumerate(field_items):
+            col = cols_a if i % 2 == 0 else cols_b
+            auto = auto_detect_col(df_preview.columns, field)
+            with col:
+                chosen = st.selectbox(
+                    f"{label}",
+                    available_cols,
+                    index=available_cols.index(auto) if auto and auto in available_cols else 0,
+                    key=f"map_nac_{field}",
+                    help=f"Candidatos habituales: {hint}"
+                )
+                nac_map[field] = chosen if chosen != '— auto —' else None
+
+        if st.button("💾 Guardar mapeo Tarifa Nacional", key="save_nac_map", type="primary"):
+            st.session_state['nac_sheet']  = sel_sheet_nac
+            st.session_state['nac_col_map'] = nac_map
+            load_tarifa_nac.clear()
+            st.success(f"✅ Mapeo guardado — pestaña «{sel_sheet_nac}»")
+            st.rerun()
+
+        # Show current mapping
+        if 'nac_sheet' in st.session_state:
+            st.info(f"Configuración activa: pestaña **{st.session_state['nac_sheet']}** · "
+                    f"PVP = `{st.session_state.get('nac_col_map',{}).get('PVP','auto')}` · "
+                    f"NETO = `{st.session_state.get('nac_col_map',{}).get('NETO','auto')}`")
+    else:
+        st.info("Sube la Tarifa Nacional en el panel izquierdo para configurar el mapeo.")
+
+    st.divider()
+
+    # ── Tarifa Internacional ──────────────────────────────────────────────────
+    st.markdown("### 🌍 Tarifa Internacional")
+
+    if path_inter:
+        xl_inter = pd.ExcelFile(path_inter)
+        detected_inter = detect_sheet_mapping(path_inter)
+        all_sheets_inter = xl_inter.sheet_names
+        valid_sheets = [s for s in all_sheets_inter if not s.startswith('(') and 'COM' not in s.upper()]
+
+        st.markdown("**Asignación pestaña → país:**")
+        st.caption("Indica a qué país corresponde cada pestaña. Deja en blanco para ignorarla.")
+
+        COUNTRY_OPTIONS = ['— ignorar —', 'ES', 'FR', 'IT', 'DE', 'PT', 'PL', 'NL', 'BE', 'SE', 'UK',
+                           'AMAZON', 'MIRAVIA', 'MEDIAMARKT', 'CARREFOUR', 'PRIVALIA', 'OTRO']
+
+        inter_sheet_map = {}
+        n_cols = 3
+        sheet_rows = [valid_sheets[i:i+n_cols] for i in range(0, len(valid_sheets), n_cols)]
+        for row_sheets in sheet_rows:
+            cols = st.columns(n_cols)
+            for col, sh in zip(cols, row_sheets):
+                auto_country = detected_inter.get(sh, '')
+                default_idx = COUNTRY_OPTIONS.index(auto_country) if auto_country in COUNTRY_OPTIONS else 0
+                with col:
+                    chosen_country = st.selectbox(
+                        f"**{sh}**", COUNTRY_OPTIONS,
+                        index=default_idx,
+                        key=f"map_inter_{sh}"
+                    )
+                    if chosen_country != '— ignorar —':
+                        inter_sheet_map[sh] = chosen_country
+
+        st.markdown("**Mapeo de columnas (aplica a todas las pestañas):**")
+        df_inter_preview = pd.read_excel(path_inter, sheet_name=valid_sheets[0], nrows=1)
+        available_inter = ['— auto —'] + list(df_inter_preview.columns)
+        st.caption(f"Columnas en «{valid_sheets[0]}»: "
+                   f"`{'`, `'.join(df_inter_preview.columns[:8])}` …")
+
+        cols_a, cols_b = st.columns(2)
+        inter_map = {}
+        for i, (field, (label, hint)) in enumerate(field_items):
+            col = cols_a if i % 2 == 0 else cols_b
+            auto = auto_detect_col(df_inter_preview.columns, field)
+            with col:
+                chosen = st.selectbox(
+                    f"{label}",
+                    available_inter,
+                    index=available_inter.index(auto) if auto and auto in available_inter else 0,
+                    key=f"map_inter_{field}",
+                    help=f"Candidatos: {hint}"
+                )
+                inter_map[field] = chosen if chosen != '— auto —' else None
+
+        if st.button("💾 Guardar mapeo Tarifa Internacional", key="save_inter_map", type="primary"):
+            st.session_state['inter_sheet_map'] = inter_sheet_map
+            st.session_state['inter_col_map']   = inter_map
+            load_tarifa_inter.clear()
+            st.success(f"✅ Mapeo guardado — {len(inter_sheet_map)} pestañas configuradas")
+            st.rerun()
+
+        if 'inter_sheet_map' in st.session_state:
+            st.info(f"Configuración activa: "
+                    f"{len(st.session_state['inter_sheet_map'])} pestañas · "
+                    f"PVP = `{st.session_state.get('inter_col_map',{}).get('PVP','auto')}` · "
+                    f"NETO = `{st.session_state.get('inter_col_map',{}).get('NETO','auto')}`")
+
+        if st.button("↺ Resetear a autodetección", key="reset_inter_map"):
+            for k in ['inter_sheet_map','inter_col_map','nac_sheet','nac_col_map']:
+                st.session_state.pop(k, None)
+            load_tarifa_nac.clear()
+            load_tarifa_inter.clear()
+            st.success("Mapeo reseteado a autodetección")
+            st.rerun()
+    else:
+        st.info("Sube la Tarifa Internacional en el panel izquierdo para configurar el mapeo.")
